@@ -1511,8 +1511,21 @@ register({
       return void message.reply({ embeds: [errorEmbed("You need **Manage Channels** permission.")] });
     const reason = args.join(" ") || "Channel nuked";
     const ch = message.channel as TextChannel;
-    const newCh = await ch.clone({ reason: `${message.author.tag}: ${reason}` });
-    await newCh.setPosition(ch.position);
+
+    // Snapshot everything before deletion
+    const position = ch.position;
+    const overwrites = [...ch.permissionOverwrites.cache.values()].map((o) => ({
+      id: o.id,
+      type: o.type,
+      allow: o.allow,
+      deny: o.deny,
+    }));
+
+    const newCh = await ch.clone({
+      reason: `${message.author.tag}: ${reason}`,
+      permissionOverwrites: overwrites,
+    });
+    await newCh.setPosition(position);
     await ch.delete(reason);
     const sent = await newCh.send({ embeds: [successEmbed(`💥  Channel nuked by **${message.author.tag}**.`)] });
     setTimeout(() => sent.delete().catch(() => null), 5000);
