@@ -1,0 +1,1010 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: Discord Server Management API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: bot
+    description: Bot management
+  - name: guild
+    description: Guild/server management
+  - name: antinuke
+    description: Anti-nuke security settings
+  - name: antiraid
+    description: Anti-raid protection settings
+  - name: moderation
+    description: Moderation tools
+  - name: leveling
+    description: Leveling system
+  - name: reaction-roles
+    description: Reaction role management
+  - name: welcome
+    description: Welcome and goodbye messages
+  - name: social-alerts
+    description: Social media alert feeds
+  - name: logs
+    description: Audit/action logs
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /bot/info:
+    get:
+      operationId: getBotInfo
+      tags: [bot]
+      summary: Get bot information
+      responses:
+        "200":
+          description: Bot info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotInfo"
+
+  /bot/guilds:
+    get:
+      operationId: getBotGuilds
+      tags: [bot]
+      summary: Get all guilds the bot is in
+      responses:
+        "200":
+          description: List of guilds
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Guild"
+
+  /guild/{guildId}/overview:
+    get:
+      operationId: getGuildOverview
+      tags: [guild]
+      summary: Get guild overview stats
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Guild overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GuildOverview"
+
+  /guild/{guildId}/channels:
+    get:
+      operationId: getGuildChannels
+      tags: [guild]
+      summary: Get guild channels
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of channels
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Channel"
+
+  /guild/{guildId}/roles:
+    get:
+      operationId: getGuildRoles
+      tags: [guild]
+      summary: Get guild roles
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Role"
+
+  /guild/{guildId}/antinuke:
+    get:
+      operationId: getAntinukeSettings
+      tags: [antinuke]
+      summary: Get anti-nuke settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Anti-nuke settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AntinukeSettings"
+    put:
+      operationId: updateAntinukeSettings
+      tags: [antinuke]
+      summary: Update anti-nuke settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AntinukeSettings"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AntinukeSettings"
+
+  /guild/{guildId}/antinuke/whitelist:
+    get:
+      operationId: getAntinukeWhitelist
+      tags: [antinuke]
+      summary: Get whitelisted users/roles
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Whitelist entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WhitelistEntry"
+    post:
+      operationId: addToWhitelist
+      tags: [antinuke]
+      summary: Add user or role to whitelist
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WhitelistEntry"
+      responses:
+        "201":
+          description: Added to whitelist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WhitelistEntry"
+
+  /guild/{guildId}/antinuke/whitelist/{entryId}:
+    delete:
+      operationId: removeFromWhitelist
+      tags: [antinuke]
+      summary: Remove entry from whitelist
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: entryId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /guild/{guildId}/antiraid:
+    get:
+      operationId: getAntiraidSettings
+      tags: [antiraid]
+      summary: Get anti-raid settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Anti-raid settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AntiraidSettings"
+    put:
+      operationId: updateAntiraidSettings
+      tags: [antiraid]
+      summary: Update anti-raid settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AntiraidSettings"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AntiraidSettings"
+
+  /guild/{guildId}/moderation/automod:
+    get:
+      operationId: getAutomodSettings
+      tags: [moderation]
+      summary: Get auto-moderation settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Auto-mod settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomodSettings"
+    put:
+      operationId: updateAutomodSettings
+      tags: [moderation]
+      summary: Update auto-moderation settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomodSettings"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomodSettings"
+
+  /guild/{guildId}/moderation/jail:
+    get:
+      operationId: getJailSettings
+      tags: [moderation]
+      summary: Get jail system settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Jail settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JailSettings"
+    put:
+      operationId: updateJailSettings
+      tags: [moderation]
+      summary: Update jail settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JailSettings"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JailSettings"
+
+  /guild/{guildId}/leveling:
+    get:
+      operationId: getLevelingSettings
+      tags: [leveling]
+      summary: Get leveling system settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Leveling settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LevelingSettings"
+    put:
+      operationId: updateLevelingSettings
+      tags: [leveling]
+      summary: Update leveling settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LevelingSettings"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LevelingSettings"
+
+  /guild/{guildId}/reaction-roles:
+    get:
+      operationId: getReactionRoles
+      tags: [reaction-roles]
+      summary: Get all reaction role configs
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of reaction role configs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReactionRole"
+    post:
+      operationId: createReactionRole
+      tags: [reaction-roles]
+      summary: Create a reaction role
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReactionRole"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReactionRole"
+
+  /guild/{guildId}/reaction-roles/{roleId}:
+    delete:
+      operationId: deleteReactionRole
+      tags: [reaction-roles]
+      summary: Delete a reaction role config
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /guild/{guildId}/welcome:
+    get:
+      operationId: getWelcomeSettings
+      tags: [welcome]
+      summary: Get welcome/goodbye message settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Welcome settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WelcomeSettings"
+    put:
+      operationId: updateWelcomeSettings
+      tags: [welcome]
+      summary: Update welcome/goodbye settings
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WelcomeSettings"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WelcomeSettings"
+
+  /guild/{guildId}/social-alerts:
+    get:
+      operationId: getSocialAlerts
+      tags: [social-alerts]
+      summary: Get social media alert configs
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Social alert configs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SocialAlert"
+    post:
+      operationId: createSocialAlert
+      tags: [social-alerts]
+      summary: Create a social media alert
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SocialAlert"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SocialAlert"
+
+  /guild/{guildId}/social-alerts/{alertId}:
+    delete:
+      operationId: deleteSocialAlert
+      tags: [social-alerts]
+      summary: Delete a social alert
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /guild/{guildId}/logs:
+    get:
+      operationId: getAuditLogs
+      tags: [logs]
+      summary: Get recent audit/action logs
+      parameters:
+        - name: guildId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: type
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLog"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required: [success]
+
+    BotInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        discriminator:
+          type: string
+        avatar:
+          type: string
+          nullable: true
+        banner:
+          type: string
+          nullable: true
+        bio:
+          type: string
+          nullable: true
+        guildCount:
+          type: integer
+        status:
+          type: string
+          enum: [online, idle, dnd, offline]
+        ping:
+          type: integer
+      required: [id, username, discriminator, guildCount, status, ping]
+
+    Guild:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        icon:
+          type: string
+          nullable: true
+        memberCount:
+          type: integer
+        ownerId:
+          type: string
+      required: [id, name, memberCount, ownerId]
+
+    GuildOverview:
+      type: object
+      properties:
+        guildId:
+          type: string
+        memberCount:
+          type: integer
+        onlineCount:
+          type: integer
+        channelCount:
+          type: integer
+        roleCount:
+          type: integer
+        boostLevel:
+          type: integer
+        boostCount:
+          type: integer
+        warningsToday:
+          type: integer
+        bansToday:
+          type: integer
+        messagesProcessed:
+          type: integer
+        antinukeEnabled:
+          type: boolean
+        antiraidEnabled:
+          type: boolean
+      required: [guildId, memberCount, onlineCount, channelCount, roleCount, boostLevel, boostCount, warningsToday, bansToday, messagesProcessed, antinukeEnabled, antiraidEnabled]
+
+    Channel:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [text, voice, category, announcement, forum, stage]
+      required: [id, name, type]
+
+    Role:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        color:
+          type: integer
+        position:
+          type: integer
+      required: [id, name, color, position]
+
+    AntinukeSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        maxChannelDeletes:
+          type: integer
+          description: Max channel deletes per interval before action
+        maxBans:
+          type: integer
+          description: Max bans per interval before action
+        maxKicks:
+          type: integer
+          description: Max kicks per interval before action
+        maxRoleDeletes:
+          type: integer
+        maxWebhookCreates:
+          type: integer
+        intervalSeconds:
+          type: integer
+          description: Time window in seconds to count actions
+        action:
+          type: string
+          enum: [ban, kick, strip_roles, timeout]
+          description: Action to take against the rogue user
+        logChannelId:
+          type: string
+          nullable: true
+        dmOwner:
+          type: boolean
+      required: [enabled, maxChannelDeletes, maxBans, maxKicks, maxRoleDeletes, maxWebhookCreates, intervalSeconds, action, dmOwner]
+
+    WhitelistEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        guildId:
+          type: string
+        targetId:
+          type: string
+          description: User or role ID
+        targetType:
+          type: string
+          enum: [user, role]
+        targetName:
+          type: string
+        addedAt:
+          type: string
+          format: date-time
+      required: [targetId, targetType, targetName]
+
+    AntiraidSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        joinRateLimit:
+          type: integer
+          description: Max joins per interval
+        joinRateInterval:
+          type: integer
+          description: Interval in seconds
+        action:
+          type: string
+          enum: [kick, ban, timeout, lock]
+        filterNoAvatar:
+          type: boolean
+          description: Kick accounts without avatars
+        filterNewAccounts:
+          type: boolean
+          description: Kick accounts newer than minAccountAge
+        minAccountAgeDays:
+          type: integer
+        lockdownEnabled:
+          type: boolean
+        logChannelId:
+          type: string
+          nullable: true
+      required: [enabled, joinRateLimit, joinRateInterval, action, filterNoAvatar, filterNewAccounts, minAccountAgeDays, lockdownEnabled]
+
+    AutomodSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        filterInvites:
+          type: boolean
+        filterLinks:
+          type: boolean
+        filterSpam:
+          type: boolean
+        filterCaps:
+          type: boolean
+        capsThreshold:
+          type: integer
+          description: Percentage of caps to trigger filter
+        filterMentionSpam:
+          type: boolean
+        maxMentions:
+          type: integer
+        filterWords:
+          type: boolean
+        bannedWords:
+          type: array
+          items:
+            type: string
+        spamAction:
+          type: string
+          enum: [delete, warn, mute, kick, ban]
+        logChannelId:
+          type: string
+          nullable: true
+      required: [enabled, filterInvites, filterLinks, filterSpam, filterCaps, capsThreshold, filterMentionSpam, maxMentions, filterWords, bannedWords, spamAction]
+
+    JailSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        jailChannelId:
+          type: string
+          nullable: true
+        jailRoleId:
+          type: string
+          nullable: true
+        logChannelId:
+          type: string
+          nullable: true
+      required: [enabled]
+
+    LevelingSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        xpPerMessage:
+          type: integer
+        xpCooldownSeconds:
+          type: integer
+        levelUpMessage:
+          type: string
+        levelUpChannelId:
+          type: string
+          nullable: true
+        ignoredChannels:
+          type: array
+          items:
+            type: string
+        ignoredRoles:
+          type: array
+          items:
+            type: string
+        stackRoles:
+          type: boolean
+        levelRoles:
+          type: array
+          items:
+            $ref: "#/components/schemas/LevelRole"
+      required: [enabled, xpPerMessage, xpCooldownSeconds, levelUpMessage, stackRoles, ignoredChannels, ignoredRoles, levelRoles]
+
+    LevelRole:
+      type: object
+      properties:
+        level:
+          type: integer
+        roleId:
+          type: string
+        roleName:
+          type: string
+      required: [level, roleId, roleName]
+
+    ReactionRole:
+      type: object
+      properties:
+        id:
+          type: integer
+        guildId:
+          type: string
+        channelId:
+          type: string
+        messageId:
+          type: string
+        emoji:
+          type: string
+        roleId:
+          type: string
+        roleName:
+          type: string
+        description:
+          type: string
+          nullable: true
+      required: [channelId, messageId, emoji, roleId, roleName]
+
+    WelcomeSettings:
+      type: object
+      properties:
+        welcomeEnabled:
+          type: boolean
+        welcomeChannelId:
+          type: string
+          nullable: true
+        welcomeMessage:
+          type: string
+        welcomeEmbed:
+          type: boolean
+        goodbyeEnabled:
+          type: boolean
+        goodbyeChannelId:
+          type: string
+          nullable: true
+        goodbyeMessage:
+          type: string
+        dmWelcome:
+          type: boolean
+        dmMessage:
+          type: string
+      required: [welcomeEnabled, welcomeMessage, welcomeEmbed, goodbyeEnabled, goodbyeMessage, dmWelcome, dmMessage]
+
+    SocialAlert:
+      type: object
+      properties:
+        id:
+          type: integer
+        guildId:
+          type: string
+        platform:
+          type: string
+          enum: [twitter, tiktok, instagram, youtube, twitch]
+        accountHandle:
+          type: string
+        channelId:
+          type: string
+        message:
+          type: string
+        enabled:
+          type: boolean
+        lastChecked:
+          type: string
+          format: date-time
+          nullable: true
+      required: [platform, accountHandle, channelId, message, enabled]
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        guildId:
+          type: string
+        type:
+          type: string
+          enum: [antinuke_triggered, antiraid_triggered, automod_action, member_ban, member_kick, member_warn, member_jail, member_unjail, settings_change, bot_action]
+        executorId:
+          type: string
+          nullable: true
+        executorName:
+          type: string
+          nullable: true
+        targetId:
+          type: string
+          nullable: true
+        targetName:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        details:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, guildId, type, createdAt]

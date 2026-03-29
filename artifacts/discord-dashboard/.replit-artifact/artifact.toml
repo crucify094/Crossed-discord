@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Discord Server Manager"
+version = "1.0.0"
+id = "artifacts/discord-dashboard"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24327
+
+[services.development]
+run = "pnpm --filter @workspace/discord-dashboard run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/discord-dashboard", "run", "build" ]
+publicDir = "artifacts/discord-dashboard/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24327"
+BASE_PATH = "/"

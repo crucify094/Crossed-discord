@@ -1,0 +1,20 @@
+packages:
+  "framer-motion": "For premium page transitions, card entrances, and smooth interactions"
+  "zustand": "For lightweight global state management of the selected server/guild"
+  "date-fns": "For formatting audit log and activity timestamps"
+  "lucide-react": "For beautiful consistent iconography across the dashboard"
+  "clsx": "For conditional tailwind class merging"
+  "tailwind-merge": "For resolving tailwind class conflicts safely"
+
+images:
+  - path: "artifacts/discord-dashboard/public/images/dashboard-glow.png"
+    description: "Abstract deep purple and blue neon glow on a pure dark gray background, highly blurred"
+    aspect_ratio: "16:9"
+  - path: "artifacts/discord-dashboard/public/images/bot-banner.png"
+    description: "Sleek cyber-security themed abstract geometric background in dark grays and bright blurple, 8k resolution"
+    aspect_ratio: "16:9"
+
+notes:
+  - Using generated React Query hooks from @workspace/api-client-react
+  - Assuming standard native UI elements for complex interactive components to ensure crash-proof rendering
+  - Global state (Zustand) used to persist the selected guild across page navigations
