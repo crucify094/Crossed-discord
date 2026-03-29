@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Local/dev only
+.local/
+.cache/
+.replit
+replit.nix
+fix-git.sh
+
+# Frontend artifacts (not needed for API server build)
+artifacts/discord-dashboard/
+artifacts/mockup-sandbox/
+
+# Uploaded assets / screenshots
+attached_assets/
+
+# Node modules (Railway installs fresh)
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+**/dist/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
