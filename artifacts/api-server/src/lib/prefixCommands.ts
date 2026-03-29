@@ -485,6 +485,101 @@ register({
   },
 });
 
+// ── server (subcommand group) ─────────────────────────────────────────────────
+
+register({
+  name: "server",
+  description: "Server utility subcommands. Usage: -server emoji steal <guild_id>",
+  usage: "emoji steal <guild_id>",
+  category: "General",
+  async execute({ message, args, client }) {
+    const sub = args[0]?.toLowerCase();
+    const action = args[1]?.toLowerCase();
+
+    // -server emoji steal <guild_id>
+    if (sub === "emoji" && action === "steal") {
+      const targetGuildId = args[2];
+      if (!targetGuildId) {
+        return void message.reply({ embeds: [errorEmbed("Please provide a guild ID.\nUsage: `-server emoji steal <guild_id>`")] });
+      }
+
+      const targetGuild = client.guilds.cache.get(targetGuildId);
+      if (!targetGuild) {
+        return void message.reply({ embeds: [errorEmbed("I'm not in that server, or the ID is invalid.")] });
+      }
+
+      const currentGuild = message.guild!;
+      const member = message.member as GuildMember;
+
+      if (!member.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+        return void message.reply({ embeds: [errorEmbed("You need **Manage Expressions** permission to do this.")] });
+      }
+
+      if (!currentGuild.members.me?.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+        return void message.reply({ embeds: [errorEmbed("I need **Manage Expressions** permission in this server.")] });
+      }
+
+      const emojis = [...targetGuild.emojis.cache.values()];
+      if (!emojis.length) {
+        return void message.reply({ embeds: [warnEmbed(`**${targetGuild.name}** has no custom emojis.`)] });
+      }
+
+      const statusMsg = await message.reply({
+        embeds: [infoEmbed(`🎨  Stealing Emojis`).setDescription(`Stealing **${emojis.length}** emojis from **${targetGuild.name}**...\nThis may take a moment.`)],
+      });
+
+      let added = 0;
+      let failed = 0;
+      const errors: string[] = [];
+
+      for (const emoji of emojis) {
+        try {
+          const url = emoji.imageURL({ size: 128 });
+          if (!url) { failed++; continue; }
+
+          await currentGuild.emojis.create({
+            attachment: url,
+            name: emoji.name ?? `emoji_${emoji.id}`,
+          });
+          added++;
+          // Small delay to avoid rate limits
+          await new Promise((r) => setTimeout(r, 500));
+        } catch (err: any) {
+          failed++;
+          errors.push(emoji.name ?? emoji.id);
+          if (err?.message?.includes("Maximum number of emojis")) {
+            errors.push("... (emoji slots full, stopping)");
+            break;
+          }
+        }
+      }
+
+      await statusMsg.edit({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(added > 0 ? COLORS.success : COLORS.error)
+            .setTitle("🎨  Emoji Steal Complete")
+            .setDescription(
+              `✅ Added: **${added}**\n❌ Failed: **${failed}**` +
+              (errors.length ? `\n\nFailed: ${errors.slice(0, 10).join(", ")}` : "")
+            ),
+        ],
+      });
+      return;
+    }
+
+    // Unknown subcommand
+    return void message.reply({
+      embeds: [
+        infoEmbed("Server Commands")
+          .setDescription(
+            "`-server emoji steal <guild_id>` — Steal all emojis from another server the bot is in."
+          ),
+      ],
+    });
+  },
+});
+
 // ── firstmessage ──────────────────────────────────────────────────────────────
 
 register({
