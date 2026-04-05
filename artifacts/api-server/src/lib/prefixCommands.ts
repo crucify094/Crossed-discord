@@ -1564,9 +1564,14 @@ register({
     if (args.length < 2) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}addrole <@user> <@role>\``)] });
     const member = await resolveMember(message, args[0]);
     if (!member) return void message.reply({ embeds: [errorEmbed("User not found.")] });
-    const roleId = args[1].match(/\d{17,19}/)?.[0];
-    const role = roleId ? message.guild!.roles.cache.get(roleId) : null;
-    if (!role) return void message.reply({ embeds: [errorEmbed("Role not found.")] });
+    const roleIdFromArg = args[1].match(/\d{17,19}/)?.[0];
+    const roleQuery = args.slice(1).join(" ").toLowerCase().trim();
+    const role = roleIdFromArg
+      ? (message.guild!.roles.cache.get(roleIdFromArg) ?? null)
+      : (message.guild!.roles.cache.find(r => r.name.toLowerCase() === roleQuery)
+        ?? message.guild!.roles.cache.find(r => r.name.toLowerCase().includes(roleQuery))
+        ?? null);
+    if (!role) return void message.reply({ embeds: [errorEmbed("Role not found. Use the exact role name, mention it, or provide its ID.")] });
     await member.roles.add(role);
     await message.reply({ embeds: [successEmbed(`Added **${role.name}** to ${member}.`)] });
   },
@@ -1578,7 +1583,7 @@ register({
   name: "removerole",
   aliases: ["rr", "takerole"],
   description: "Removes a role from a member.",
-  usage: "<@user|id> <@role|id>",
+  usage: "<@user|id> <@role|id|name>",
   category: "Moderation",
   async execute({ message, args }) {
     if (!requirePerms(message, PermissionFlagsBits.ManageRoles))
@@ -1586,9 +1591,14 @@ register({
     if (args.length < 2) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}removerole <@user> <@role>\``)] });
     const member = await resolveMember(message, args[0]);
     if (!member) return void message.reply({ embeds: [errorEmbed("User not found.")] });
-    const roleId = args[1].match(/\d{17,19}/)?.[0];
-    const role = roleId ? message.guild!.roles.cache.get(roleId) : null;
-    if (!role) return void message.reply({ embeds: [errorEmbed("Role not found.")] });
+    const roleIdFromArg2 = args[1].match(/\d{17,19}/)?.[0];
+    const roleQuery2 = args.slice(1).join(" ").toLowerCase().trim();
+    const role = roleIdFromArg2
+      ? (message.guild!.roles.cache.get(roleIdFromArg2) ?? null)
+      : (message.guild!.roles.cache.find(r => r.name.toLowerCase() === roleQuery2)
+        ?? message.guild!.roles.cache.find(r => r.name.toLowerCase().includes(roleQuery2))
+        ?? null);
+    if (!role) return void message.reply({ embeds: [errorEmbed("Role not found. Use the exact role name, mention it, or provide its ID.")] });
     await member.roles.remove(role);
     await message.reply({ embeds: [successEmbed(`Removed **${role.name}** from ${member}.`)] });
   },

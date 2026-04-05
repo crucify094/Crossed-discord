@@ -63,27 +63,6 @@ export function registerEngagementHandlers(client: Client): void {
       const settings = await getSettings(member.guild.id);
       if (!settings) return;
 
-      if (settings.welcomeEnabled && settings.welcomeChannelId) {
-        const msg = formatMessage(settings.welcomeMessage, {
-          user: `<@${member.id}>`,
-          username: member.user.username,
-          server: member.guild.name,
-          memberCount: String(member.guild.memberCount),
-        });
-
-        const embed = new EmbedBuilder()
-          .setColor(0x5865f2)
-          .setTitle(`Welcome to ${member.guild.name}!`)
-          .setDescription(msg)
-          .setThumbnail(member.user.displayAvatarURL())
-          .setFooter({ text: `Member #${member.guild.memberCount}` })
-          .setTimestamp();
-
-        await sendToChannel(client, settings.welcomeChannelId,
-          settings.welcomeEmbed ? { embeds: [embed] } : { content: msg }
-        );
-      }
-
       if (settings.dmWelcome && settings.dmMessage) {
         const dmMsg = formatMessage(settings.dmMessage, {
           user: member.user.username,
