@@ -4,6 +4,8 @@ import { logger } from "./logger";
 let client: Client | null = null;
 let loginPromise: Promise<Client> | null = null;
 
+const RICH_PRESENCE_LARGE_IMAGE = "https://cdn.discordapp.com/attachments/1488254117108252774/1490425583937523944/IMG_2861.png?ex=69d4027d&is=69d2b0fd&hm=02e23542496703648d77f66c0bfa02a040ca6c75dabc9df7d2fda634d1833a6c&";
+
 function setRichPresence(readyClient: Client) {
   readyClient.user?.setPresence({
     status: "online",
@@ -12,6 +14,8 @@ function setRichPresence(readyClient: Client) {
         name: "Server security and management",
         type: ActivityType.Streaming,
         url: "https://discord.gg/uHuZVs8tHC",
+        // @ts-ignore - large image for rich presence
+        largeImageURL: RICH_PRESENCE_LARGE_IMAGE,
       },
     ],
   });
