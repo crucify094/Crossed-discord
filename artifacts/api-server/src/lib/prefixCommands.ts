@@ -1079,31 +1079,6 @@ register({
   },
 });
 
-// ── massban ───────────────────────────────────────────────────────────────────
-
-register({
-  name: "massban",
-  aliases: ["mban"],
-  description: "Bans multiple users by ID at once.",
-  usage: "<id1> <id2> ... [reason: <reason>]",
-  category: "Moderation",
-  async execute({ message, args }) {
-    if (!requirePerms(message, PermissionFlagsBits.BanMembers))
-      return void message.reply({ embeds: [errorEmbed("You need **Ban Members** permission.")] });
-    const reasonIdx = args.findIndex((a) => a.toLowerCase().startsWith("reason:"));
-    const reason = reasonIdx !== -1 ? args.slice(reasonIdx).join(" ").replace(/^reason:\s*/i, "") : "Mass ban";
-    const ids = (reasonIdx !== -1 ? args.slice(0, reasonIdx) : args).filter((a) => /^\d{17,19}$/.test(a));
-    if (ids.length === 0) return void message.reply({ embeds: [errorEmbed("Provide at least one valid user ID.")] });
-    let success = 0;
-    for (const id of ids) {
-      try {
-        await message.guild!.bans.create(id, { reason: `Massban by ${message.author.tag}: ${reason}` });
-        success++;
-      } catch {}
-    }
-    await message.reply({ embeds: [successEmbed(`Banned **${success}/${ids.length}** users.\n**Reason:** ${reason}`)] });
-  },
-});
 
 // ── kick ──────────────────────────────────────────────────────────────────────
 
@@ -1950,8 +1925,8 @@ register({
     if (!args[0]) return void message.reply({ embeds: [errorEmbed("Provide a role name.")] });
     const roleName = args.join(" ");
 
-    // ── Permission options ─────────────────────────────────────────────────────
-    const PERM_OPTIONS: { label: string; value: string; description: string }[] = [
+    // ── Permission options — filtered to only what the caller actually has ───────
+    const ALL_PERM_OPTIONS: { label: string; value: string; description: string }[] = [
       { label: "Administrator",    value: "Administrator",    description: "Full server access" },
       { label: "Manage Server",    value: "ManageGuild",      description: "Edit server settings" },
       { label: "Manage Roles",     value: "ManageRoles",      description: "Create & edit roles" },
@@ -1966,8 +1941,23 @@ register({
       { label: "Move Members",     value: "MoveMembers",      description: "Move members in voice" },
       { label: "Manage Webhooks",  value: "ManageWebhooks",   description: "Create & manage webhooks" },
       { label: "Manage Threads",   value: "ManageThreads",    description: "Manage threads" },
-      { label: "No Permissions",   value: "none",             description: "Create role with no permissions" },
     ];
+    const isOwner = message.author.id === BOT_OWNER_ID;
+    // Owner sees everything; others only see permissions they personally hold
+    const PERM_OPTIONS = [
+      ...ALL_PERM_OPTIONS.filter(p => {
+        if (isOwner) return true;
+        const flag = PermissionFlagsBits[p.value as keyof typeof PermissionFlagsBits];
+        return flag ? message.member!.permissions.has(flag) : false;
+      }),
+      { label: "No Permissions", value: "none", description: "Create role with no permissions" },
+    ];
+    if (PERM_OPTIONS.length === 1) {
+      // Only "No Permissions" is available — the user has no assignable permissions
+      return void message.reply({
+        embeds: [errorEmbed("You don't have any assignable permissions to grant to a role.")],
+      });
+    }
 
     // ── Color options ──────────────────────────────────────────────────────────
     const COLOR_OPTIONS: { label: string; value: string; emoji: string }[] = [
