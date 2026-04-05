@@ -1722,14 +1722,40 @@ register({
     const member = await resolveMember(message, args[0] ?? "");
     if (!member) return void message.reply({ embeds: [errorEmbed("User not found.")] });
     const reason = args.slice(1).join(" ") || "No reason";
-    // Remove visible channels access
-    const textChannels = message.guild!.channels.cache.filter(
-      (c) => c.type === ChannelType.GuildText
-    );
-    for (const [, ch] of textChannels) {
-      await (ch as TextChannel).permissionOverwrites.edit(member, { ViewChannel: false }).catch(() => null);
+    const guild = message.guild!;
+
+    // Fetch jail settings from DB
+    let jailChannelId: string | null = null;
+    let jailRoleId: string | null = null;
+    try {
+      const { jailSettingsTable } = await import("@workspace/db/schema");
+      const [row] = await db.select().from(jailSettingsTable).where(eq(jailSettingsTable.guildId, guild.id)).limit(1);
+      jailChannelId = row?.jailChannelId ?? null;
+      jailRoleId = row?.jailRoleId ?? null;
+    } catch {}
+
+    // Apply jail role if configured
+    if (jailRoleId) {
+      const jailRole = guild.roles.cache.get(jailRoleId);
+      if (jailRole) {
+        const rolesToRemove = member.roles.cache.filter((r) => r.id !== guild.id && r.id !== jailRoleId);
+        await member.roles.remove([...rolesToRemove.keys()], `Jailed: ${reason}`).catch(() => null);
+        await member.roles.add(jailRole, `Jailed: ${reason}`).catch(() => null);
+      }
     }
-    await message.reply({ embeds: [warnEmbed(`🔒  **${member.user.tag}** has been jailed.\n**Reason:** ${reason}`)] });
+
+    // Deny view access in all text channels except the jail channel
+    const textChannels = guild.channels.cache.filter((c) => c.type === ChannelType.GuildText);
+    for (const [, ch] of textChannels) {
+      if (jailChannelId && ch.id === jailChannelId) {
+        await (ch as TextChannel).permissionOverwrites.edit(member, { ViewChannel: true, SendMessages: true }).catch(() => null);
+      } else {
+        await (ch as TextChannel).permissionOverwrites.edit(member, { ViewChannel: false }).catch(() => null);
+      }
+    }
+
+    const jailChannelMention = jailChannelId ? ` They can only see <#${jailChannelId}>.` : "";
+    await message.reply({ embeds: [warnEmbed(`🔒  **${member.user.tag}** has been jailed.\n**Reason:** ${reason}${jailChannelMention}`)] });
   },
 });
 
@@ -1745,9 +1771,26 @@ register({
       return void message.reply({ embeds: [errorEmbed("You need **Moderate Members** permission.")] });
     const member = await resolveMember(message, args[0] ?? "");
     if (!member) return void message.reply({ embeds: [errorEmbed("User not found.")] });
-    const textChannels = message.guild!.channels.cache.filter(
-      (c) => c.type === ChannelType.GuildText
-    );
+    const guild = message.guild!;
+
+    // Fetch jail settings from DB
+    let jailRoleId: string | null = null;
+    try {
+      const { jailSettingsTable } = await import("@workspace/db/schema");
+      const [row] = await db.select().from(jailSettingsTable).where(eq(jailSettingsTable.guildId, guild.id)).limit(1);
+      jailRoleId = row?.jailRoleId ?? null;
+    } catch {}
+
+    // Remove jail role if configured
+    if (jailRoleId) {
+      const jailRole = guild.roles.cache.get(jailRoleId);
+      if (jailRole && member.roles.cache.has(jailRoleId)) {
+        await member.roles.remove(jailRole, "Unjailed").catch(() => null);
+      }
+    }
+
+    // Remove all channel permission overwrites for this member
+    const textChannels = guild.channels.cache.filter((c) => c.type === ChannelType.GuildText);
     for (const [, ch] of textChannels) {
       await (ch as TextChannel).permissionOverwrites.delete(member).catch(() => null);
     }
@@ -1759,7 +1802,7 @@ register({
 
 register({
   name: "setprefix",
-  description: "Changes the bot's command prefix (admin only).",
+  description: "Changes the bot's command prefix for this server.",
   usage: "<prefix>",
   category: "Moderation",
   async execute({ message, args }) {
@@ -1767,8 +1810,18 @@ register({
       return void message.reply({ embeds: [errorEmbed("You need **Administrator** permission.")] });
     if (!args[0]) return void message.reply({ embeds: [errorEmbed("Provide a prefix (e.g., `!`, `?`, `.`).")] });
     const newPrefix = args[0];
-    if (newPrefix.length > 3) return void message.reply({ embeds: [errorEmbed("Prefix must be 3 characters or less.")] });
-    await message.reply({ embeds: [successEmbed(`Prefix changed from \`${PREFIX}\` to \`${newPrefix}\`. **Note:** This requires a bot restart to take effect.`)] });
+    if (newPrefix.length > 5) return void message.reply({ embeds: [errorEmbed("Prefix must be 5 characters or less.")] });
+    const guildId = message.guild!.id;
+    try {
+      await db.insert(welcomeSettingsTable)
+        .values({ guildId, guildPrefix: newPrefix })
+        .onConflictDoUpdate({ target: welcomeSettingsTable.guildId, set: { guildPrefix: newPrefix, updatedAt: new Date() } });
+      guildPrefixes.set(guildId, newPrefix);
+      await message.reply({ embeds: [successEmbed(`Server prefix changed to \`${newPrefix}\`. All commands now use \`${newPrefix}<command>\`.`)] });
+    } catch (err) {
+      logger.error({ err }, "Failed to save prefix");
+      await message.reply({ embeds: [errorEmbed("Failed to save the prefix. Please try again.")] });
+    }
   },
 });
 
@@ -2160,7 +2213,7 @@ register({
 
 register({
   name: "cleanup",
-  aliases: ["clean"],
+  aliases: ["botclean"],
   description: "Deletes messages from the bot.",
   usage: "[amount]",
   category: "Moderation",
@@ -4072,7 +4125,7 @@ export function registerPrefixHandler(client: Client): void {
         if (executorId && executorId !== client.user?.id) {
           const whitelisted = await db.select()
             .from(antinukeWhitelistTable)
-            .where(and(eq(antinukeWhitelistTable.guildId, ban.guild.id), eq(antinukeWhitelistTable.userId, executorId)))
+            .where(and(eq(antinukeWhitelistTable.guildId, ban.guild.id), eq(antinukeWhitelistTable.targetId, executorId)))
             .limit(1);
           if (!whitelisted.length) {
             if (!antinukeBanTracker.has(ban.guild.id)) antinukeBanTracker.set(ban.guild.id, new Map());
