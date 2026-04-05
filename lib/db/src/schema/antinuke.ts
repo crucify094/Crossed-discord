@@ -1,4 +1,4 @@
-import { pgTable, text, integer, boolean, serial, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, boolean, serial, timestamp, pgEnum, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -27,7 +27,9 @@ export const antinukeWhitelistTable = pgTable("antinuke_whitelist", {
   targetType: text("target_type").notNull(),
   targetName: text("target_name").notNull(),
   addedAt: timestamp("added_at").notNull().defaultNow(),
-});
+}, (t) => [
+  unique("antinuke_whitelist_guild_target_unique").on(t.guildId, t.targetId),
+]);
 
 export const insertAntinukeSettingsSchema = createInsertSchema(antinukeSettingsTable).omit({ id: true, updatedAt: true });
 export const insertAntinukeWhitelistSchema = createInsertSchema(antinukeWhitelistTable).omit({ id: true, addedAt: true });
