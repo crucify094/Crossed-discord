@@ -3657,6 +3657,16 @@ register({
       "🔧 Owner Commands": [
         { name: "`-servers`", value: "List all servers the bot is in, with a select menu for per-server details." },
         { name: "`-owner`", value: "This menu — bot stats, owner commands, and config info." },
+        { name: "`-save server`", value: "Save the current server's full structure (channels, categories, permissions). **Server owner only.**" },
+        { name: "`-restore server`", value: "Restore the server from its last save, auto-ban the nuker, and delete their messages. **Server owner only.**" },
+        { name: "`-server create {number}`", value: "Save the current server layout to a numbered slot (1–999). **Server owner only.**" },
+        { name: "`-server dump {number}`", value: "Apply a saved server template from a numbered slot into the current server. **Server owner only.**" },
+      ],
+      "💾 Server Backup": [
+        { name: "How it works", value: "Use `-save server` to snapshot your server at any time. If anything gets nuked or deleted, `-restore server` will rebuild missing channels, ban the attacker, and wipe their messages automatically." },
+        { name: "Templates", value: "Use `-server create {number}` to store a server layout, then `-server dump {number}` to copy that layout into any server you own." },
+        { name: "Who can use it", value: "Only the **server owner** of each server can run these commands — admins cannot." },
+        { name: "Tip", value: "Run `-save server` whenever you make changes to your server so the backup stays current." },
       ],
       "⚙️ Configuration": [
         { name: "Bot Prefix", value: `\`${PREFIX}\` (default, per-server overrides supported)` },
@@ -4192,12 +4202,12 @@ async function applySnapshot(
 
 register({
   name: "save",
-  description: "Saves the current server structure (channels, categories, permissions) for later restoration.",
+  description: "Saves the current server structure (channels, categories, permissions) for later restoration. Server owner only.",
   usage: "server",
   category: "Security",
   async execute({ message, args }) {
-    if (!requirePerms(message, PermissionFlagsBits.Administrator))
-      return void message.reply({ embeds: [errorEmbed("You need **Administrator** permission.")] });
+    if (message.guild!.ownerId !== message.author.id)
+      return void message.reply({ embeds: [errorEmbed("🔒 Only the **server owner** can use this command.")] });
     if (args[0]?.toLowerCase() !== "server")
       return void message.reply({ embeds: [errorEmbed("Usage: `-save server`")] });
 
@@ -4221,12 +4231,12 @@ register({
 
 register({
   name: "restore",
-  description: "Restores the server to its last saved state, bans the nuker, and removes their messages.",
+  description: "Restores the server to its last saved state, bans the nuker, and removes their messages. Server owner only.",
   usage: "server",
   category: "Security",
   async execute({ message, args }) {
-    if (!requirePerms(message, PermissionFlagsBits.Administrator))
-      return void message.reply({ embeds: [errorEmbed("You need **Administrator** permission.")] });
+    if (message.guild!.ownerId !== message.author.id)
+      return void message.reply({ embeds: [errorEmbed("🔒 Only the **server owner** can use this command.")] });
     if (args[0]?.toLowerCase() !== "server")
       return void message.reply({ embeds: [errorEmbed("Usage: `-restore server`")] });
 
@@ -4313,12 +4323,12 @@ register({
 
 register({
   name: "server",
-  description: "Save or load a server template by number. Use `create {number}` to save and `dump {number}` to apply.",
+  description: "Save or load a server template by number. Server owner only.",
   usage: "create {number} | dump {number}",
   category: "Security",
   async execute({ message, args }) {
-    if (!requirePerms(message, PermissionFlagsBits.Administrator))
-      return void message.reply({ embeds: [errorEmbed("You need **Administrator** permission.")] });
+    if (message.guild!.ownerId !== message.author.id)
+      return void message.reply({ embeds: [errorEmbed("🔒 Only the **server owner** can use this command.")] });
 
     const subCmd = args[0]?.toLowerCase();
     const slotArg = parseInt(args[1] ?? "", 10);
@@ -5214,6 +5224,31 @@ export function registerPrefixHandler(client: Client): void {
       )
       .setTimestamp();
     await logCh.send({ embeds: [embed] }).catch(() => null);
+  });
+
+  // ── Guild join: DM server owner with save reminder ────────────────────────
+  client.on("guildCreate", async (guild) => {
+    try {
+      const owner = await guild.fetchOwner().catch(() => null);
+      if (!owner) return;
+      await owner.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x5865f2)
+            .setTitle("👋 Thanks for adding me to your server!")
+            .setDescription(
+              `Hey ${owner.user.username}, I'm now in **${guild.name}**.\n\n` +
+              `To protect your server, make sure to run:\n\`\`\`-save server\`\`\`\n` +
+              `**Do this every time your server changes** (new channels, categories, permissions). ` +
+              `If your server ever gets nuked or channels are deleted, just run:\n\`\`\`-restore server\`\`\`\n` +
+              `This will restore all missing channels, ban the attacker, and delete their messages automatically.\n\n` +
+              `⚠️ Only the **server owner** can run these commands.`
+            )
+            .setFooter({ text: `Server: ${guild.name}` })
+            .setTimestamp(),
+        ],
+      }).catch(() => null);
+    } catch {}
   });
 }
 
