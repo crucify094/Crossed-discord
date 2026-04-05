@@ -448,11 +448,38 @@ register({
 register({
   name: "roles",
   aliases: ["rolelist", "rl"],
-  description: "Lists all roles in the server.",
-  usage: "",
+  description: "Lists all roles, or gives a role to all members with `all <role>`.",
+  usage: "[all <role name>]",
   category: "General",
-  async execute({ message }) {
+  async execute({ message, args }) {
     const g = message.guild!;
+
+    // ── -roles all <role> ─────────────────────────────────────────────────────
+    if (args[0]?.toLowerCase() === "all") {
+      if (!requirePerms(message, PermissionFlagsBits.ManageRoles))
+        return void message.reply({ embeds: [errorEmbed("You need **Manage Roles** permission.")] });
+      const query = args.slice(1).join(" ").toLowerCase().trim();
+      if (!query) return void message.reply({ embeds: [errorEmbed("Provide a role name. Usage: `-roles all <role name>`")] });
+      const role =
+        message.guild!.roles.cache.find(r => r.name.toLowerCase() === query) ??
+        message.guild!.roles.cache.find(r => r.name.toLowerCase().includes(query)) ??
+        null;
+      if (!role) return void message.reply({ embeds: [errorEmbed(`Role \`${query}\` not found.`)] });
+      const members = await message.guild!.members.fetch();
+      const eligible = members.filter(m => !m.user.bot && !m.roles.cache.has(role.id));
+      const sent = await message.reply({
+        embeds: [infoEmbed(`⏳  Giving **${role.name}** to ${eligible.size} members...`)],
+      });
+      let success = 0, failed = 0;
+      for (const [, member] of eligible) {
+        try { await member.roles.add(role); success++; }
+        catch { failed++; }
+      }
+      return void sent.edit({
+        embeds: [successEmbed(`Gave **${role.name}** to **${success}** members.${failed ? ` (${failed} failed)` : ""}`)],
+      });
+    }
+
     const roles = [...g.roles.cache.values()]
       .filter(r => r.id !== g.id)
       .sort((a, b) => b.position - a.position);
@@ -1524,12 +1551,20 @@ register({
   async execute({ message, args }) {
     if (!requirePerms(message, PermissionFlagsBits.ManageRoles))
       return void message.reply({ embeds: [errorEmbed("You need **Manage Roles** permission.")] });
-    if (args.length < 2) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}role <@user> <@role>\``)] });
+    if (args.length < 2) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}role <@user> <role name or @role>\``)] });
     const member = await resolveMember(message, args[0]);
     if (!member) return void message.reply({ embeds: [errorEmbed("User not found.")] });
+    // Resolve by mention/ID first, then by exact name, then partial name
     const roleId = args[1].match(/\d{17,19}/)?.[0];
-    const role = roleId ? message.guild!.roles.cache.get(roleId) : null;
-    if (!role) return void message.reply({ embeds: [errorEmbed("Role not found.")] });
+    let role = roleId ? (message.guild!.roles.cache.get(roleId) ?? null) : null;
+    if (!role) {
+      const query = args.slice(1).join(" ").toLowerCase().trim();
+      role =
+        message.guild!.roles.cache.find(r => r.name.toLowerCase() === query) ??
+        message.guild!.roles.cache.find(r => r.name.toLowerCase().includes(query)) ??
+        null;
+    }
+    if (!role) return void message.reply({ embeds: [errorEmbed("Role not found. Use the exact role name or mention it.")] });
     if (member.roles.cache.has(role.id)) {
       await member.roles.remove(role);
       await message.reply({ embeds: [successEmbed(`Removed **${role.name}** from ${member}.`)] });
@@ -1906,20 +1941,147 @@ register({
 register({
   name: "rolecreate",
   aliases: ["cr", "mkrole"],
-  description: "Creates a new role.",
-  usage: "<name> [color]",
+  description: "Creates a new role with an interactive permission picker and color picker.",
+  usage: "<name>",
   category: "Moderation",
   async execute({ message, args }) {
     if (!requirePerms(message, PermissionFlagsBits.ManageRoles))
       return void message.reply({ embeds: [errorEmbed("You need **Manage Roles** permission.")] });
     if (!args[0]) return void message.reply({ embeds: [errorEmbed("Provide a role name.")] });
-    const name = args[0];
-    const color = args[1]?.replace("#", "") ?? "2f3136";
+    const roleName = args.join(" ");
+
+    // ── Permission options ─────────────────────────────────────────────────────
+    const PERM_OPTIONS: { label: string; value: string; description: string }[] = [
+      { label: "Administrator",    value: "Administrator",    description: "Full server access" },
+      { label: "Manage Server",    value: "ManageGuild",      description: "Edit server settings" },
+      { label: "Manage Roles",     value: "ManageRoles",      description: "Create & edit roles" },
+      { label: "Manage Channels",  value: "ManageChannels",   description: "Create & edit channels" },
+      { label: "Kick Members",     value: "KickMembers",      description: "Kick members from server" },
+      { label: "Ban Members",      value: "BanMembers",       description: "Ban members from server" },
+      { label: "Manage Messages",  value: "ManageMessages",   description: "Delete & pin messages" },
+      { label: "Manage Nicknames", value: "ManageNicknames",  description: "Change member nicknames" },
+      { label: "View Audit Log",   value: "ViewAuditLog",     description: "View server audit log" },
+      { label: "Mention Everyone", value: "MentionEveryone",  description: "Ping @everyone / @here" },
+      { label: "Mute Members",     value: "MuteMembers",      description: "Mute members in voice" },
+      { label: "Move Members",     value: "MoveMembers",      description: "Move members in voice" },
+      { label: "Manage Webhooks",  value: "ManageWebhooks",   description: "Create & manage webhooks" },
+      { label: "Manage Threads",   value: "ManageThreads",    description: "Manage threads" },
+      { label: "No Permissions",   value: "none",             description: "Create role with no permissions" },
+    ];
+
+    // ── Color options ──────────────────────────────────────────────────────────
+    const COLOR_OPTIONS: { label: string; value: string; emoji: string }[] = [
+      { label: "Default (no color)", value: "000000", emoji: "⬛" },
+      { label: "Blurple",            value: "5865F2", emoji: "💜" },
+      { label: "Red",                value: "ED4245", emoji: "🔴" },
+      { label: "Orange",             value: "E67E22", emoji: "🟠" },
+      { label: "Yellow",             value: "FEE75C", emoji: "🟡" },
+      { label: "Green",              value: "57F287", emoji: "🟢" },
+      { label: "Blue",               value: "3498DB", emoji: "🔵" },
+      { label: "Purple",             value: "9B59B6", emoji: "🟣" },
+      { label: "Pink",               value: "E91E8C", emoji: "🩷" },
+      { label: "Teal",               value: "1ABC9C", emoji: "🩵" },
+      { label: "Gold",               value: "F1C40F", emoji: "🌟" },
+      { label: "White",              value: "FFFFFF", emoji: "⬜" },
+    ];
+
+    // ── Step 1: Permissions multi-select ──────────────────────────────────────
+    const permMenu = new StringSelectMenuBuilder()
+      .setCustomId("rolecreate_perms")
+      .setPlaceholder("Select permissions (multi-select)…")
+      .setMinValues(1)
+      .setMaxValues(PERM_OPTIONS.length)
+      .addOptions(
+        PERM_OPTIONS.map(p =>
+          new StringSelectMenuOptionBuilder().setLabel(p.label).setValue(p.value).setDescription(p.description)
+        )
+      );
+
+    const permRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(permMenu);
+
+    const step1Embed = new EmbedBuilder()
+      .setColor(COLORS.primary)
+      .setTitle(`🎭  Creating role: ${roleName}`)
+      .setDescription("**Step 1 of 2** — Select the permissions for this role.\nYou can pick multiple. Choose **No Permissions** for a role with no special access.");
+
+    const reply = await message.reply({ embeds: [step1Embed], components: [permRow] });
+
     try {
-      const role = await message.guild!.roles.create({ name, color: parseInt(color, 16) });
-      await message.reply({ embeds: [successEmbed(`Role ${role} created successfully.`)] });
+      // ── Collect permissions ──────────────────────────────────────────────────
+      const permInteraction = await reply.awaitMessageComponent({
+        componentType: ComponentType.StringSelect,
+        filter: i => i.user.id === message.author.id && i.customId === "rolecreate_perms",
+        time: 60_000,
+      });
+
+      let selectedPerms = 0n;
+      if (!permInteraction.values.includes("none")) {
+        for (const val of permInteraction.values) {
+          const flag = PermissionFlagsBits[val as keyof typeof PermissionFlagsBits];
+          if (flag) selectedPerms |= flag;
+        }
+      }
+      const permNames = permInteraction.values.includes("none")
+        ? "None"
+        : PERM_OPTIONS.filter(p => permInteraction.values.includes(p.value)).map(p => p.label).join(", ");
+
+      // ── Step 2: Color select ───────────────────────────────────────────────
+      const colorMenu = new StringSelectMenuBuilder()
+        .setCustomId("rolecreate_color")
+        .setPlaceholder("Choose a role color…")
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(
+          COLOR_OPTIONS.map(c =>
+            new StringSelectMenuOptionBuilder().setLabel(c.label).setValue(c.value).setEmoji(c.emoji)
+          )
+        );
+
+      const colorRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(colorMenu);
+
+      const step2Embed = new EmbedBuilder()
+        .setColor(COLORS.primary)
+        .setTitle(`🎭  Creating role: ${roleName}`)
+        .setDescription(`**Step 2 of 2** — Choose a color for the role.\n\n✅ **Permissions:** ${permNames}`);
+
+      await permInteraction.update({ embeds: [step2Embed], components: [colorRow] });
+
+      // ── Collect color ────────────────────────────────────────────────────────
+      const colorInteraction = await reply.awaitMessageComponent({
+        componentType: ComponentType.StringSelect,
+        filter: i => i.user.id === message.author.id && i.customId === "rolecreate_color",
+        time: 60_000,
+      });
+
+      const colorHex = colorInteraction.values[0];
+      const colorInt = parseInt(colorHex, 16);
+      const colorName = COLOR_OPTIONS.find(c => c.value === colorHex)?.label ?? colorHex;
+
+      // ── Create the role ──────────────────────────────────────────────────────
+      const newRole = await message.guild!.roles.create({
+        name: roleName,
+        color: colorInt,
+        permissions: selectedPerms,
+      });
+
+      await colorInteraction.update({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(colorInt || COLORS.primary)
+            .setTitle("✅  Role Created")
+            .addFields(
+              { name: "Role", value: `${newRole}`, inline: true },
+              { name: "Color", value: `#${colorHex}  (${colorName})`, inline: true },
+              { name: "Permissions", value: permNames, inline: false },
+            ),
+        ],
+        components: [],
+      });
     } catch {
-      await message.reply({ embeds: [errorEmbed("Could not create role. Invalid color?")] });
+      await reply.edit({
+        embeds: [errorEmbed("Role creation timed out or was cancelled.")],
+        components: [],
+      }).catch(() => null);
     }
   },
 });
