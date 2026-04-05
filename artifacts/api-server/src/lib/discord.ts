@@ -9,7 +9,7 @@ function setRichPresence(readyClient: Client) {
     status: "online",
     activities: [
       {
-        name: "🔗 discord.gg/crossed",
+        name: "Server security and management",
         type: ActivityType.Streaming,
         url: "https://discord.gg/uHuZVs8tHC",
       },
