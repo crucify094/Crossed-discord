@@ -1723,74 +1723,125 @@ register({
     if (!member) return void message.reply({ embeds: [errorEmbed("User not found.")] });
     const reason = args.slice(1).join(" ") || "No reason";
     const guild = message.guild!;
+    const { jailSettingsTable } = await import("@workspace/db/schema");
 
     // Fetch jail settings from DB
     let jailChannelId: string | null = null;
     let jailRoleId: string | null = null;
     try {
-      const { jailSettingsTable } = await import("@workspace/db/schema");
       const [row] = await db.select().from(jailSettingsTable).where(eq(jailSettingsTable.guildId, guild.id)).limit(1);
       jailChannelId = row?.jailChannelId ?? null;
       jailRoleId = row?.jailRoleId ?? null;
     } catch {}
 
-    // Create jail channel if not configured — find existing or make a new one
-    if (!jailChannelId) {
-      try {
-        const { jailSettingsTable } = await import("@workspace/db/schema");
-        const existing = guild.channels.cache.find(
-          (c) => c.type === ChannelType.GuildText && c.name.toLowerCase() === "jail"
-        ) as TextChannel | undefined;
-        if (existing) {
-          jailChannelId = existing.id;
-        } else {
-          const created = await guild.channels.create({
-            name: "jail",
-            type: ChannelType.GuildText,
-            permissionOverwrites: [
-              { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-              ...(guild.members.me ? [{ id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : []),
-            ],
-            topic: "Jail channel — restricted members are sent here.",
-          });
-          jailChannelId = created.id;
-        }
-        // Persist to DB
-        await db.insert(jailSettingsTable)
-          .values({ guildId: guild.id, jailChannelId, jailRoleId })
-          .onConflictDoUpdate({ target: jailSettingsTable.guildId, set: { jailChannelId, updatedAt: new Date() } });
-      } catch (err) {
-        logger.error({ err }, "Failed to create/persist jail channel");
+    // ── Ensure Jailed role exists ──────────────────────────────────────────
+    let jailRole = jailRoleId
+      ? (guild.roles.cache.get(jailRoleId) ?? await guild.roles.fetch(jailRoleId).catch(() => null))
+      : null;
+
+    if (!jailRole) {
+      // Check for an existing role named "Jailed"
+      jailRole = guild.roles.cache.find((r) => r.name.toLowerCase() === "jailed") ?? null;
+      if (!jailRole) {
+        jailRole = await guild.roles.create({
+          name: "Jailed",
+          color: 0x808080,
+          hoist: false,
+          mentionable: false,
+          permissions: [],
+          reason: "Auto-created jail role",
+        }).catch(() => null);
+      }
+      if (jailRole) {
+        jailRoleId = jailRole.id;
+        try {
+          await db.insert(jailSettingsTable)
+            .values({ guildId: guild.id, jailChannelId, jailRoleId })
+            .onConflictDoUpdate({ target: jailSettingsTable.guildId, set: { jailRoleId, updatedAt: new Date() } });
+        } catch {}
       }
     }
 
-    // Apply jail role if configured
-    if (jailRoleId) {
-      const jailRole = guild.roles.cache.get(jailRoleId)
-        ?? await guild.roles.fetch(jailRoleId).catch(() => null);
-      if (jailRole) {
-        const rolesToRemove = member.roles.cache.filter((r) => r.id !== guild.id && r.id !== jailRoleId);
-        await member.roles.remove([...rolesToRemove.keys()], `Jailed: ${reason}`).catch(() => null);
+    // ── Ensure jail channel exists ─────────────────────────────────────────
+    let jailChannel = jailChannelId
+      ? (guild.channels.cache.get(jailChannelId) as TextChannel | undefined) ?? null
+      : null;
+
+    if (!jailChannel) {
+      // Check for an existing channel named "jail"
+      jailChannel = (guild.channels.cache.find(
+        (c) => c.type === ChannelType.GuildText && c.name.toLowerCase() === "jail"
+      ) as TextChannel | undefined) ?? null;
+
+      if (!jailChannel) {
+        // Build permission overwrites: deny @everyone, allow jailed role + bot
+        const overwrites: Parameters<typeof guild.channels.create>[0]["permissionOverwrites"] = [
+          { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+        ];
+        if (guild.members.me) {
+          overwrites.push({ id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages] });
+        }
+        if (jailRole) {
+          overwrites.push({ id: jailRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+        }
+        jailChannel = await guild.channels.create({
+          name: "jail",
+          type: ChannelType.GuildText,
+          permissionOverwrites: overwrites,
+          topic: "🔒 Jail — only jailed members and moderators can see this channel.",
+          reason: "Auto-created jail channel",
+        }).catch(() => null) as TextChannel | null;
+      } else {
+        // Existing channel found — update its overwrites to match expectations
+        if (jailRole) {
+          await (jailChannel as TextChannel).permissionOverwrites.edit(jailRole, { ViewChannel: true, SendMessages: true }).catch(() => null);
+        }
+        await (jailChannel as TextChannel).permissionOverwrites.edit(guild.id, { ViewChannel: false }).catch(() => null);
+        if (guild.members.me) {
+          await (jailChannel as TextChannel).permissionOverwrites.edit(guild.members.me.id, { ViewChannel: true, SendMessages: true, ManageMessages: true }).catch(() => null);
+        }
+      }
+
+      if (jailChannel) {
+        jailChannelId = jailChannel.id;
+        try {
+          await db.insert(jailSettingsTable)
+            .values({ guildId: guild.id, jailChannelId, jailRoleId })
+            .onConflictDoUpdate({ target: jailSettingsTable.guildId, set: { jailChannelId, updatedAt: new Date() } });
+        } catch {}
+      }
+    }
+
+    // ── Apply jail: assign Jailed role + block all other channels ──────────
+    // 1. Remove all current roles (except @everyone) and assign Jailed role
+    if (jailRole) {
+      const rolesToRemove = member.roles.cache.filter((r) => r.id !== guild.id && r.id !== jailRole!.id);
+      if (rolesToRemove.size) await member.roles.remove([...rolesToRemove.keys()], `Jailed: ${reason}`).catch(() => null);
+      if (!member.roles.cache.has(jailRole.id)) {
         await member.roles.add(jailRole, `Jailed: ${reason}`).catch(() => null);
       }
     }
 
-    // Deny view access in all text channels except the jail channel
+    // 2. Deny ViewChannel for this user in all text channels except the jail channel
+    //    (belt-and-suspenders alongside the role-based restriction)
     const textChannels = guild.channels.cache.filter((c) => c.type === ChannelType.GuildText);
     for (const [, ch] of textChannels) {
       if (jailChannelId && ch.id === jailChannelId) {
+        // Ensure the user explicitly can see the jail channel
         await (ch as TextChannel).permissionOverwrites.edit(member, { ViewChannel: true, SendMessages: true }).catch(() => null);
       } else {
         await (ch as TextChannel).permissionOverwrites.edit(member, { ViewChannel: false }).catch(() => null);
       }
     }
 
-    const jailChannelMention = jailChannelId ? ` They can only see <#${jailChannelId}>.` : "";
-    await message.reply({ embeds: [warnEmbed(`🔒  **${member.user.tag}** has been jailed.\n**Reason:** ${reason}${jailChannelMention}`)] });
+    const jailMention = jailChannel ? ` They can only see <#${jailChannel.id}>.` : "";
+    await message.reply({ embeds: [warnEmbed(`🔒  **${member.user.tag}** has been jailed.\n**Reason:** ${reason}${jailMention}`)] });
   },
 });
 
 // ── unjail ────────────────────────────────────────────────────────────────────
+
+const MEMBER_ROLE_ID = "1488756528575025165";
 
 register({
   name: "unjail",
@@ -1806,26 +1857,41 @@ register({
 
     // Fetch jail settings from DB
     let jailRoleId: string | null = null;
+    let jailChannelId: string | null = null;
     try {
       const { jailSettingsTable } = await import("@workspace/db/schema");
       const [row] = await db.select().from(jailSettingsTable).where(eq(jailSettingsTable.guildId, guild.id)).limit(1);
       jailRoleId = row?.jailRoleId ?? null;
+      jailChannelId = row?.jailChannelId ?? null;
     } catch {}
 
-    // Remove jail role if configured
-    if (jailRoleId) {
-      const jailRole = guild.roles.cache.get(jailRoleId);
-      if (jailRole && member.roles.cache.has(jailRoleId)) {
-        await member.roles.remove(jailRole, "Unjailed").catch(() => null);
-      }
+    // 1. Remove Jailed role
+    if (jailRoleId && member.roles.cache.has(jailRoleId)) {
+      const jailRole = guild.roles.cache.get(jailRoleId)
+        ?? await guild.roles.fetch(jailRoleId).catch(() => null);
+      if (jailRole) await member.roles.remove(jailRole, "Unjailed").catch(() => null);
     }
 
-    // Remove all channel permission overwrites for this member
-    const textChannels = guild.channels.cache.filter((c) => c.type === ChannelType.GuildText);
-    for (const [, ch] of textChannels) {
+    // 2. Clear all user-specific channel overwrites (restores normal channel access)
+    const allTextChannels = guild.channels.cache.filter((c) => c.type === ChannelType.GuildText);
+    for (const [, ch] of allTextChannels) {
       await (ch as TextChannel).permissionOverwrites.delete(member).catch(() => null);
     }
-    await message.reply({ embeds: [successEmbed(`**${member.user.tag}** has been released from jail.`)] });
+
+    // 3. Remove user-specific overwrite from jail channel too (no longer needs special access)
+    if (jailChannelId) {
+      const jailCh = guild.channels.cache.get(jailChannelId) as TextChannel | undefined;
+      if (jailCh) await jailCh.permissionOverwrites.delete(member).catch(() => null);
+    }
+
+    // 4. Give the member role back
+    const memberRole = guild.roles.cache.get(MEMBER_ROLE_ID)
+      ?? await guild.roles.fetch(MEMBER_ROLE_ID).catch(() => null);
+    if (memberRole) {
+      await member.roles.add(memberRole, "Released from jail").catch(() => null);
+    }
+
+    await message.reply({ embeds: [successEmbed(`✅  **${member.user.tag}** has been released from jail and their access has been restored.`)] });
   },
 });
 
