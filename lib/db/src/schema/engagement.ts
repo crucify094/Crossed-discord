@@ -31,6 +31,27 @@ export const welcomeSettingsTable = pgTable("welcome_settings", {
   boosterChannelId: text("booster_channel_id"),
   boosterMessage: text("booster_message").notNull().default("🎉 Thank you {user} for boosting **{server}**!"),
   eventLogChannelId: text("event_log_channel_id"),
+  // New fields
+  autoRoleId: text("auto_role_id"),
+  pingOnJoinChannelId: text("ping_on_join_channel_id"),
+  vanityCode: text("vanity_code"),
+  vanityRoleId: text("vanity_role_id"),
+  guildPrefix: text("guild_prefix"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const boosterRolesTable = pgTable("booster_roles", {
+  id: serial("id").primaryKey(),
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  roleId: text("role_id").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const guildBoosterRoleConfigTable = pgTable("guild_booster_role_config", {
+  id: serial("id").primaryKey(),
+  guildId: text("guild_id").notNull().unique(),
+  baseRoleId: text("base_role_id"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
@@ -56,3 +77,4 @@ export type WelcomeSettings = typeof welcomeSettingsTable.$inferSelect;
 export type InsertWelcomeSettings = z.infer<typeof insertWelcomeSettingsSchema>;
 export type SocialAlert = typeof socialAlertsTable.$inferSelect;
 export type InsertSocialAlert = z.infer<typeof insertSocialAlertSchema>;
+export type BoosterRole = typeof boosterRolesTable.$inferSelect;

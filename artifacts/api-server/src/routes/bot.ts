@@ -27,7 +27,32 @@ router.get("/bot/info", async (req, res) => {
 router.get("/bot/guilds", async (req, res) => {
   try {
     const client = await getDiscordClient();
-    const guilds = client.guilds.cache.map((g) => ({
+    const botGuilds = client.guilds.cache;
+
+    if (req.session?.user?.accessToken) {
+      const userGuildsRes = await fetch("https://discord.com/api/v10/users/@me/guilds", {
+        headers: { Authorization: `Bearer ${req.session.user.accessToken}` },
+      });
+
+      if (userGuildsRes.ok) {
+        const userGuilds = (await userGuildsRes.json()) as Array<{ id: string }>;
+        const userGuildIds = new Set(userGuilds.map((g) => g.id));
+
+        const sharedGuilds = botGuilds
+          .filter((g) => userGuildIds.has(g.id))
+          .map((g) => ({
+            id: g.id,
+            name: g.name,
+            icon: g.icon,
+            memberCount: g.memberCount,
+            ownerId: g.ownerId,
+          }));
+
+        return res.json(sharedGuilds);
+      }
+    }
+
+    const guilds = botGuilds.map((g) => ({
       id: g.id,
       name: g.name,
       icon: g.icon,

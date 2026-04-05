@@ -31,6 +31,17 @@ export async function getDiscordClient(): Promise<Client> {
     throw new Error("DISCORD_BOT_TOKEN is not set");
   }
 
+  // In development, only connect the bot if explicitly enabled.
+  // This prevents the dev server and the published production server
+  // from both responding to every Discord message with duplicate embeds.
+  const isDev = process.env["NODE_ENV"] === "development";
+  const botEnabled = process.env["DISCORD_BOT_ENABLED"] === "true";
+  if (isDev && !botEnabled) {
+    throw new Error(
+      "Bot is disabled in development (set DISCORD_BOT_ENABLED=true to enable locally)"
+    );
+  }
+
   loginPromise = (async () => {
     client = new Client({
       intents: [
