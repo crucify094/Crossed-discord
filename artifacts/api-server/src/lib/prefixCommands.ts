@@ -14,6 +14,7 @@ import {
   type TextChannel,
   type VoiceChannel,
   type GuildChannel,
+  type CategoryChannel,
   type ButtonBuilder,
 } from "discord.js";
 import { logger } from "./logger";
@@ -4075,44 +4076,61 @@ interface SavedCategory {
 }
 interface ServerSnapshot { categories: SavedCategory[]; channels: SavedChannel[]; }
 
+const THREAD_TYPES = new Set([
+  ChannelType.PublicThread,
+  ChannelType.PrivateThread,
+  ChannelType.AnnouncementThread,
+]);
+
 async function captureServerSnapshot(guild: import("discord.js").Guild): Promise<ServerSnapshot> {
   await guild.channels.fetch();
   const categories: SavedCategory[] = [];
   const channels: SavedChannel[] = [];
 
   for (const [, ch] of guild.channels.cache) {
-    if (ch.type === ChannelType.GuildCategory) {
-      const cat = ch as import("discord.js").CategoryChannel;
-      categories.push({
-        id: cat.id,
-        name: cat.name,
-        position: cat.rawPosition,
-        permissionOverwrites: cat.permissionOverwrites.cache.map(pw => ({
-          id: pw.id, type: pw.type,
-          allow: pw.allow.bitfield.toString(),
-          deny: pw.deny.bitfield.toString(),
-        })),
-      });
-    } else {
-      const c = ch as import("discord.js").GuildChannel;
-      const parentName = c.parent?.name ?? null;
-      const tc = ch as import("discord.js").TextChannel;
-      const vc = ch as import("discord.js").VoiceChannel;
-      channels.push({
-        id: c.id, name: c.name, type: c.type, position: c.rawPosition,
-        parentName,
-        topic: tc.topic ?? null,
-        nsfw: (tc as any).nsfw ?? false,
-        bitrate: (vc as any).bitrate ?? undefined,
-        userLimit: (vc as any).userLimit ?? undefined,
-        permissionOverwrites: c.permissionOverwrites.cache.map(pw => ({
-          id: pw.id, type: pw.type,
-          allow: pw.allow.bitfield.toString(),
-          deny: pw.deny.bitfield.toString(),
-        })),
-      });
+    // Skip threads — they have no independent permission overwrites
+    if (THREAD_TYPES.has(ch.type as any)) continue;
+
+    try {
+      if (ch.type === ChannelType.GuildCategory) {
+        const cat = ch as CategoryChannel;
+        categories.push({
+          id: cat.id,
+          name: cat.name,
+          position: cat.rawPosition,
+          permissionOverwrites: cat.permissionOverwrites.cache.map(pw => ({
+            id: pw.id, type: pw.type,
+            allow: pw.allow.bitfield.toString(),
+            deny: pw.deny.bitfield.toString(),
+          })),
+        });
+      } else {
+        const c = ch as GuildChannel;
+        // Only save channels that have permissionOverwrites (all non-thread GuildChannels do)
+        if (!c.permissionOverwrites) continue;
+        const parentName = c.parent?.name ?? null;
+        channels.push({
+          id: c.id,
+          name: c.name,
+          type: c.type,
+          position: c.rawPosition,
+          parentName,
+          topic: (c as any).topic ?? null,
+          nsfw: (c as any).nsfw ?? false,
+          bitrate: (c as any).bitrate ?? undefined,
+          userLimit: (c as any).userLimit ?? undefined,
+          permissionOverwrites: c.permissionOverwrites.cache.map(pw => ({
+            id: pw.id, type: pw.type,
+            allow: pw.allow.bitfield.toString(),
+            deny: pw.deny.bitfield.toString(),
+          })),
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, channelId: ch.id, channelName: (ch as any).name }, "Skipped channel during snapshot capture");
     }
   }
+
   categories.sort((a, b) => a.position - b.position);
   channels.sort((a, b) => a.position - b.position);
   return { categories, channels };
@@ -4216,13 +4234,13 @@ register({
     try {
       const snapshot = await captureServerSnapshot(guild);
       const data = JSON.stringify(snapshot);
-      await db.insert(serverSnapshotTable)
-        .values({ guildId: guild.id, slot: 0, data })
-        .onConflictDoUpdate({ target: [serverSnapshotTable.guildId, serverSnapshotTable.slot], set: { data, createdAt: new Date() } });
+      await db.delete(serverSnapshotTable)
+        .where(and(eq(serverSnapshotTable.guildId, guild.id), eq(serverSnapshotTable.slot, 0)));
+      await db.insert(serverSnapshotTable).values({ guildId: guild.id, slot: 0, data });
       await saving.edit({ embeds: [successEmbed(`Server saved! Captured **${snapshot.categories.length}** categories and **${snapshot.channels.length}** channels. Use \`-restore server\` to restore.`)] });
     } catch (err) {
       logger.error({ err }, "Failed to save server snapshot");
-      await saving.edit({ embeds: [errorEmbed("Failed to save server.")] });
+      await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}`)] });
     }
   },
 });
@@ -4345,13 +4363,13 @@ register({
       try {
         const snapshot = await captureServerSnapshot(guild);
         const data = JSON.stringify(snapshot);
-        await db.insert(serverSnapshotTable)
-          .values({ guildId: guild.id, slot: slotArg, data })
-          .onConflictDoUpdate({ target: [serverSnapshotTable.guildId, serverSnapshotTable.slot], set: { data, createdAt: new Date() } });
+        await db.delete(serverSnapshotTable)
+          .where(and(eq(serverSnapshotTable.guildId, guild.id), eq(serverSnapshotTable.slot, slotArg)));
+        await db.insert(serverSnapshotTable).values({ guildId: guild.id, slot: slotArg, data });
         await saving.edit({ embeds: [successEmbed(`Server saved to slot **${slotArg}**! Captured **${snapshot.categories.length}** categories and **${snapshot.channels.length}** channels.`)] });
       } catch (err) {
         logger.error({ err }, "Failed to save server snapshot");
-        await saving.edit({ embeds: [errorEmbed("Failed to save server.")] });
+        await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}`)] });
       }
     } else {
       // dump
