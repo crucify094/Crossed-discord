@@ -31,6 +31,7 @@ export const welcomeSettingsTable = pgTable("welcome_settings", {
   boosterChannelId: text("booster_channel_id"),
   boosterMessage: text("booster_message").notNull().default("🎉 Thank you {user} for boosting **{server}**!"),
   eventLogChannelId: text("event_log_channel_id"),
+  vcLogChannelId: text("vc_log_channel_id"),
   // New fields
   autoRoleId: text("auto_role_id"),
   pingOnJoinChannelId: text("ping_on_join_channel_id"),

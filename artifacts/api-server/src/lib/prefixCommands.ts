@@ -98,6 +98,9 @@ const antiSpamTracker = new Map<string, number[]>();
 // Role restore: `${guildId}:${userId}` → roleIds[]
 export const roleSaveStore = new Map<string, string[]>();
 
+// Jail role backup: `${guildId}:${userId}` → roleIds[] (roles stripped by -jail)
+const jailRoleBackupStore = new Map<string, string[]>();
+
 // Antinuke ban tracker: `${guildId}` → map of executorId → timestamps[]
 const antinukeBanTracker = new Map<string, Map<string, number[]>>();
 
@@ -648,11 +651,15 @@ register({
   name: "roleinfo",
   aliases: ["ri"],
   description: "Shows information about a role.",
-  usage: "<@role|id>",
+  usage: "<@role|id|name>",
   category: "General",
   async execute({ message, args }) {
-    const id = args[0]?.match(/\d{17,19}/)?.[0];
-    const role = id ? message.guild!.roles.cache.get(id) : null;
+    const arg = args.join(" ");
+    const id = arg?.match(/\d{17,19}/)?.[0];
+    let role = id ? message.guild!.roles.cache.get(id) : null;
+    if (!role && arg) {
+      role = message.guild!.roles.cache.find((r) => r.name.toLowerCase() === arg.toLowerCase()) ?? null;
+    }
     if (!role) return void message.reply({ embeds: [errorEmbed("Role not found.")] });
     await message.reply({
       embeds: [
@@ -677,11 +684,15 @@ register({
 register({
   name: "inrole",
   description: "Lists members who have a specific role.",
-  usage: "<@role|id>",
+  usage: "<@role|id|name>",
   category: "General",
   async execute({ message, args }) {
-    const id = args[0]?.match(/\d{17,19}/)?.[0];
-    const role = id ? message.guild!.roles.cache.get(id) : null;
+    const arg = args.join(" ");
+    const id = arg?.match(/\d{17,19}/)?.[0];
+    let role = id ? message.guild!.roles.cache.get(id) : null;
+    if (!role && arg) {
+      role = message.guild!.roles.cache.find((r) => r.name.toLowerCase() === arg.toLowerCase()) ?? null;
+    }
     if (!role) return void message.reply({ embeds: [errorEmbed("Role not found.")] });
     const members = role.members.map((m) => m.toString()).slice(0, 30);
     await message.reply({
@@ -1826,7 +1837,11 @@ register({
     // 1. Remove all current roles (except @everyone) and assign Jailed role
     if (jailRole) {
       const rolesToRemove = member.roles.cache.filter((r) => r.id !== guild.id && r.id !== jailRole!.id);
-      if (rolesToRemove.size) await member.roles.remove([...rolesToRemove.keys()], `Jailed: ${reason}`).catch(() => null);
+      // Back up roles before stripping so unjail can restore them
+      if (rolesToRemove.size) {
+        jailRoleBackupStore.set(`${guild.id}:${member.id}`, [...rolesToRemove.keys()]);
+        await member.roles.remove([...rolesToRemove.keys()], `Jailed: ${reason}`).catch(() => null);
+      }
       if (!member.roles.cache.has(jailRole.id)) {
         await member.roles.add(jailRole, `Jailed: ${reason}`).catch(() => null);
       }
@@ -1850,8 +1865,6 @@ register({
 });
 
 // ── unjail ────────────────────────────────────────────────────────────────────
-
-const MEMBER_ROLE_ID = "1488756528575025165";
 
 register({
   name: "unjail",
@@ -1894,11 +1907,17 @@ register({
       if (jailCh) await jailCh.permissionOverwrites.delete(member).catch(() => null);
     }
 
-    // 4. Give the member role back
-    const memberRole = guild.roles.cache.get(MEMBER_ROLE_ID)
-      ?? await guild.roles.fetch(MEMBER_ROLE_ID).catch(() => null);
-    if (memberRole) {
-      await member.roles.add(memberRole, "Released from jail").catch(() => null);
+    // 4. Restore roles that were stripped at jail-time (if still in cache)
+    const backupKey = `${guild.id}:${member.id}`;
+    const backedUpRoles = jailRoleBackupStore.get(backupKey);
+    if (backedUpRoles?.length) {
+      const rolesToRestore = backedUpRoles
+        .map((id) => guild.roles.cache.get(id))
+        .filter((r): r is NonNullable<typeof r> => r !== undefined && r.id !== jailRoleId);
+      if (rolesToRestore.length) {
+        await member.roles.add(rolesToRestore, "Released from jail — restoring roles").catch(() => null);
+      }
+      jailRoleBackupStore.delete(backupKey);
     }
 
     await message.reply({ embeds: [successEmbed(`✅  **${member.user.tag}** has been released from jail and their access has been restored.`)] });
@@ -1975,32 +1994,6 @@ register({
   },
 });
 
-// ── editantinuke ──────────────────────────────────────────────────────────────
-
-register({
-  name: "editantinuke",
-  aliases: ["setan"],
-  description: "Enables/disables anti-nuke features.",
-  usage: "enable|disable",
-  category: "Moderation",
-  async execute({ message, args }) {
-    if (!requirePerms(message, PermissionFlagsBits.Administrator))
-      return void message.reply({ embeds: [errorEmbed("You need **Administrator** permission.")] });
-    if (!args[0]) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}editantinuke enable|disable\``)] });
-    const { autoModConfig } = await import("./automod");
-    const action = args[0].toLowerCase();
-    if (action === "enable") {
-      autoModConfig.enabled = true;
-      await message.reply({ embeds: [successEmbed("✅ Anti-nuke system **enabled**.")] });
-    } else if (action === "disable") {
-      autoModConfig.enabled = false;
-      await message.reply({ embeds: [successEmbed("❌ Anti-nuke system **disabled**.")] });
-    } else {
-      await message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}editantinuke enable|disable\``)] });
-    }
-  },
-});
-
 // ── setbooster ────────────────────────────────────────────────────────────────
 
 register({
@@ -2067,7 +2060,14 @@ register({
     const chId = args[0].match(/\d{17,19}/)?.[0];
     const channel = chId ? message.guild!.channels.cache.get(chId) : null;
     if (!channel?.isTextBased()) return void message.reply({ embeds: [errorEmbed("Invalid text channel.")] });
-    await message.reply({ embeds: [successEmbed(`Voice log channel set to ${channel}.`)] });
+    try {
+      await db.insert(welcomeSettingsTable)
+        .values({ guildId: message.guild!.id, vcLogChannelId: channel.id })
+        .onConflictDoUpdate({ target: welcomeSettingsTable.guildId, set: { vcLogChannelId: channel.id, updatedAt: new Date() } });
+    } catch (err) {
+      logger.error({ err }, "Failed to save VC log channel");
+    }
+    await message.reply({ embeds: [successEmbed(`Voice log channel set to ${channel}. Voice join/leave/switch events will be logged there.`)] });
   },
 });
 
@@ -3374,6 +3374,7 @@ register({
 
 register({
   name: "editantinuke",
+  aliases: ["setan"],
   description: "Enables or disables the AntiNuke system.",
   usage: "enable | disable",
   category: "Security",
@@ -4228,7 +4229,7 @@ export function registerPrefixHandler(client: Client): void {
   client.on("voiceStateUpdate", async (oldState, newState) => {
     if (newState.member?.user.bot) return;
     const guild = newState.guild ?? oldState.guild;
-    const logCh = await getEventLogChannel(client, guild.id);
+    const logCh = await getVcLogChannel(client, guild.id);
     if (!logCh) return;
 
     const member = newState.member ?? oldState.member;
@@ -4888,7 +4889,7 @@ export function registerPrefixHandler(client: Client): void {
   });
 }
 
-// ── Log channel helper ────────────────────────────────────────────────────────
+// ── Log channel helpers ───────────────────────────────────────────────────────
 
 async function getEventLogChannel(client: Client, guildId: string): Promise<TextChannel | null> {
   try {
@@ -4896,6 +4897,20 @@ async function getEventLogChannel(client: Client, guildId: string): Promise<Text
       .from(welcomeSettingsTable).where(eq(welcomeSettingsTable.guildId, guildId)).limit(1);
     if (!row?.eventLogChannelId) return null;
     const ch = await client.channels.fetch(row.eventLogChannelId);
+    if (ch?.isTextBased() && "send" in ch) return ch as TextChannel;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function getVcLogChannel(client: Client, guildId: string): Promise<TextChannel | null> {
+  try {
+    const [row] = await db.select({ vcLogChannelId: welcomeSettingsTable.vcLogChannelId, eventLogChannelId: welcomeSettingsTable.eventLogChannelId })
+      .from(welcomeSettingsTable).where(eq(welcomeSettingsTable.guildId, guildId)).limit(1);
+    const channelId = row?.vcLogChannelId ?? row?.eventLogChannelId;
+    if (!channelId) return null;
+    const ch = await client.channels.fetch(channelId);
     if (ch?.isTextBased() && "send" in ch) return ch as TextChannel;
     return null;
   } catch {
