@@ -1,4 +1,4 @@
-import { pgTable, text, integer, boolean, serial, timestamp, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, boolean, serial, timestamp, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -17,7 +17,23 @@ export const levelingSettingsTable = pgTable("leveling_settings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+export const levelingProgressTable = pgTable("leveling_progress", {
+  id: serial("id").primaryKey(),
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  xp: integer("xp").notNull().default(0),
+  level: integer("level").notNull().default(0),
+  totalMessages: integer("total_messages").notNull().default(0),
+  lastMessageAt: timestamp("last_message_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  guildUserIdx: uniqueIndex("leveling_progress_guild_user_idx").on(table.guildId, table.userId),
+}));
+
 export const insertLevelingSettingsSchema = createInsertSchema(levelingSettingsTable).omit({ id: true, updatedAt: true });
+export const insertLevelingProgressSchema = createInsertSchema(levelingProgressTable).omit({ id: true, updatedAt: true });
 
 export type LevelingSettings = typeof levelingSettingsTable.$inferSelect;
 export type InsertLevelingSettings = z.infer<typeof insertLevelingSettingsSchema>;
+export type LevelingProgress = typeof levelingProgressTable.$inferSelect;
+export type InsertLevelingProgress = z.infer<typeof insertLevelingProgressSchema>;

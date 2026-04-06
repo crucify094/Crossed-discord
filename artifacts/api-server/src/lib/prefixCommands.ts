@@ -29,8 +29,12 @@ import {
   boosterRolesTable,
   guildBoosterRoleConfigTable,
   serverSnapshotTable,
+  jailSettingsTable,
+  reactionRolesTable,
+  levelingProgressTable,
+  levelingSettingsTable,
 } from "@workspace/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 
 export const PREFIX = "-";
 
@@ -125,6 +129,8 @@ const LOG_CHANNEL_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 const antinukeChannelDeleteTracker = new Map<string, Map<string, number[]>>();
 // Antinuke role delete tracker: guildId → map of executorId → timestamps[]
 const antinukeRoleDeleteTracker = new Map<string, Map<string, number[]>>();
+// XP cooldown: `${guildId}:${userId}` → last XP timestamp
+const xpCooldownStore = new Map<string, number>();
 // Whitelist cache: guildId → Set of whitelisted user IDs
 const whitelistCache = new Map<string, { ids: Set<string>; ts: number }>();
 const WHITELIST_CACHE_TTL = 60 * 1000; // 1 minute
@@ -1813,8 +1819,6 @@ register({
     if (!member) return void message.reply({ embeds: [errorEmbed("User not found.")] });
     const reason = args.slice(1).join(" ") || "No reason";
     const guild = message.guild!;
-    const { jailSettingsTable } = await import("@workspace/db/schema");
-
     // Fetch jail settings from DB
     let jailChannelId: string | null = null;
     let jailRoleId: string | null = null;
@@ -1951,7 +1955,6 @@ register({
     let jailRoleId: string | null = null;
     let jailChannelId: string | null = null;
     try {
-      const { jailSettingsTable } = await import("@workspace/db/schema");
       const [row] = await db.select().from(jailSettingsTable).where(eq(jailSettingsTable.guildId, guild.id)).limit(1);
       jailRoleId = row?.jailRoleId ?? null;
       jailChannelId = row?.jailChannelId ?? null;
@@ -2893,23 +2896,22 @@ register({
     const member = args[0] ? await resolveMember(message, args[0]) : (message.member as GuildMember);
     if (!member) return void message.reply({ embeds: [errorEmbed("User not found.")] });
     try {
-      const { db } = await import("@workspace/db");
-      const { levelingProgressTable } = await import("@workspace/db/schema");
-      const { eq, and } = await import("drizzle-orm");
       const [row] = await db.select().from(levelingProgressTable)
         .where(and(eq(levelingProgressTable.guildId, message.guild!.id), eq(levelingProgressTable.userId, member.id)));
-      if (!row) return void message.reply({ embeds: [errorEmbed(`**${member.displayName}** has no XP yet.`)] });
+      if (!row) return void message.reply({ embeds: [infoEmbed(`⭐  ${member.displayName}'s Rank`).setDescription("No XP yet — keep chatting to earn levels!")] });
       await message.reply({
         embeds: [
           infoEmbed(`⭐  ${member.displayName}'s Rank`)
             .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
             .addFields(
               { name: "Level", value: `\`${row.level}\``, inline: true },
-              { name: "XP", value: `\`${row.xp}\``, inline: true }
+              { name: "XP", value: `\`${row.xp}\``, inline: true },
+              { name: "Messages", value: `\`${row.totalMessages}\``, inline: true }
             ),
         ],
       });
-    } catch {
+    } catch (err) {
+      logger.error({ err }, "rank command error");
       await message.reply({ embeds: [errorEmbed("Leveling data unavailable.")] });
     }
   },
@@ -2923,17 +2925,15 @@ register({
   category: "Leveling",
   async execute({ message }) {
     try {
-      const { db } = await import("@workspace/db");
-      const { levelingProgressTable } = await import("@workspace/db/schema");
-      const { eq, desc } = await import("drizzle-orm");
       const rows = await db.select().from(levelingProgressTable)
         .where(eq(levelingProgressTable.guildId, message.guild!.id))
         .orderBy(desc(levelingProgressTable.xp))
         .limit(10);
-      if (!rows.length) return void message.reply({ embeds: [errorEmbed("No leveling data yet.")] });
-      const desc2 = rows.map((r, i) => `**${i + 1}.** <@${r.userId}> — Level ${r.level} (${r.xp} XP)`).join("\n");
-      await message.reply({ embeds: [infoEmbed(`🏆  ${message.guild!.name} Leaderboard`).setDescription(desc2)] });
-    } catch {
+      if (!rows.length) return void message.reply({ embeds: [infoEmbed("🏆  Leaderboard").setDescription("No XP earned yet. Keep chatting!")] });
+      const list = rows.map((r, i) => `**${i + 1}.** <@${r.userId}> — Level ${r.level} (${r.xp} XP)`).join("\n");
+      await message.reply({ embeds: [infoEmbed(`🏆  ${message.guild!.name} Leaderboard`).setDescription(list)] });
+    } catch (err) {
+      logger.error({ err }, "leaderboard command error");
       await message.reply({ embeds: [errorEmbed("Leveling data unavailable.")] });
     }
   },
@@ -3100,84 +3100,13 @@ register({
 // ──────────────────────────────────────────────────────────────────────────────
 
 // TOS-violating terms (Discord's own prohibited content categories)
-export const TOS_WORDS = [
+export const TOS_WORDS: string[] = [
   "nigger","nigga","faggot","chink","spic","wetback","kike","gook","tranny","cunt",
   "csam","cp ","child porn","loli porn","nonce","pedo ","pedophile","jailbait",
   "ddos","dox ","doxx","swatting","grabify","ip grabber","stresser","booter",
   "rat link","discord nitro generator","free nitro hack","account token",
 ];
 
-register({
-  name: "filter",
-  aliases: ["wordfilter", "wf"],
-  description: "Manage custom blocked words.",
-  usage: "add <word> | remove <word> | list | clear",
-  category: "Moderation",
-  async execute({ message, args }) {
-    if (!requirePerms(message, PermissionFlagsBits.ManageGuild))
-      return void message.reply({ embeds: [errorEmbed("You need **Manage Server** permission.")] });
-    const sub = args[0]?.toLowerCase();
-
-    if (sub === "add") {
-      const phrase = args.slice(1).join(" ").trim().toLowerCase();
-      if (!phrase) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}filter add <word or phrase>\``)] });
-      const word = phrase;
-      try {
-        const { db } = await import("@workspace/db");
-        const { automodSettingsTable } = await import("@workspace/db/schema");
-        const { eq, sql } = await import("drizzle-orm");
-        await db.insert(automodSettingsTable)
-          .values({ guildId: message.guild!.id, bannedWords: [word] })
-          .onConflictDoUpdate({
-            target: automodSettingsTable.guildId,
-            set: { bannedWords: sql`array_append(${automodSettingsTable.bannedWords}, ${word})`, updatedAt: new Date() }
-          });
-        bannedWordsCache.delete(message.guild!.id);
-        await message.reply({ embeds: [successEmbed(`Added **"${word}"** to the word filter. Messages containing it will be deleted.`)] });
-      } catch (err) { await message.reply({ embeds: [errorEmbed("Failed to update filter.")] }); }
-    } else if (sub === "remove") {
-      const phrase = args.slice(1).join(" ").trim().toLowerCase();
-      if (!phrase) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}filter remove <word or phrase>\``)] });
-      const word = phrase;
-      try {
-        const { db } = await import("@workspace/db");
-        const { automodSettingsTable } = await import("@workspace/db/schema");
-        const { eq, sql } = await import("drizzle-orm");
-        await db.insert(automodSettingsTable)
-          .values({ guildId: message.guild!.id, bannedWords: [] })
-          .onConflictDoUpdate({
-            target: automodSettingsTable.guildId,
-            set: { bannedWords: sql`array_remove(${automodSettingsTable.bannedWords}, ${word})`, updatedAt: new Date() }
-          });
-        bannedWordsCache.delete(message.guild!.id);
-        await message.reply({ embeds: [successEmbed(`Removed **"${word}"** from the word filter.`)] });
-      } catch { await message.reply({ embeds: [errorEmbed("Failed to update filter.")] }); }
-    } else if (sub === "list") {
-      try {
-        const { db } = await import("@workspace/db");
-        const { automodSettingsTable } = await import("@workspace/db/schema");
-        const { eq } = await import("drizzle-orm");
-        const [row] = await db.select().from(automodSettingsTable).where(eq(automodSettingsTable.guildId, message.guild!.id)).limit(1);
-        const words = row?.bannedWords ?? [];
-        if (!words.length) return void message.reply({ embeds: [infoEmbed("No custom words in the filter.")] });
-        await message.reply({ embeds: [infoEmbed(`Custom Filter (${words.length} words)`).setDescription(words.map((w) => `\`${w}\``).join(", "))] });
-      } catch { await message.reply({ embeds: [errorEmbed("Failed to load filter.")] }); }
-    } else if (sub === "clear") {
-      try {
-        const { db } = await import("@workspace/db");
-        const { automodSettingsTable } = await import("@workspace/db/schema");
-        const { eq } = await import("drizzle-orm");
-        await db.insert(automodSettingsTable)
-          .values({ guildId: message.guild!.id, bannedWords: [] })
-          .onConflictDoUpdate({ target: automodSettingsTable.guildId, set: { bannedWords: [], updatedAt: new Date() } });
-        bannedWordsCache.delete(message.guild!.id);
-        await message.reply({ embeds: [successEmbed("Word filter cleared.")] });
-      } catch { await message.reply({ embeds: [errorEmbed("Failed to clear filter.")] }); }
-    } else {
-      await message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}filter add|remove|list|clear ...\``)] });
-    }
-  },
-});
 
 // ──────────────────────────────────────────────────────────────────────────────
 // ═══════════════════════ ROLE SHORTHAND ══════════════════════════════════════
@@ -3243,8 +3172,6 @@ register({
       try {
         const targetMsg = await (channel as TextChannel).messages.fetch(msgId);
         await targetMsg.react(emoji);
-        const { db } = await import("@workspace/db");
-        const { reactionRolesTable } = await import("@workspace/db/schema");
         await db.insert(reactionRolesTable).values({
           guildId: message.guild!.id, channelId: channel.id, messageId: msgId,
           emoji, roleId: role.id, roleName: role.name,
@@ -3255,17 +3182,11 @@ register({
       if (args.length < 3) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}reactionrole remove <messageId> <emoji>\``)] });
       const msgId = args[1]; const emoji = args[2];
       try {
-        const { db } = await import("@workspace/db");
-        const { reactionRolesTable } = await import("@workspace/db/schema");
-        const { and, eq } = await import("drizzle-orm");
         await db.delete(reactionRolesTable).where(and(eq(reactionRolesTable.guildId, message.guild!.id), eq(reactionRolesTable.messageId, msgId), eq(reactionRolesTable.emoji, emoji)));
         await message.reply({ embeds: [successEmbed("Reaction role removed.")] });
       } catch { await message.reply({ embeds: [errorEmbed("Failed to remove reaction role.")] }); }
     } else if (sub === "list") {
       try {
-        const { db } = await import("@workspace/db");
-        const { reactionRolesTable } = await import("@workspace/db/schema");
-        const { eq } = await import("drizzle-orm");
         const rows = await db.select().from(reactionRolesTable).where(eq(reactionRolesTable.guildId, message.guild!.id));
         if (!rows.length) return void message.reply({ embeds: [infoEmbed("No reaction roles set up.")] });
         const desc = rows.map((r) => `${r.emoji} on msg \`${r.messageId}\` → <@&${r.roleId}>`).join("\n");
@@ -3315,7 +3236,6 @@ register({
         data.openedCategoryId = openedCategory.id;
         ticketStore.set(guild.id, data);
         // Send the ticket embed with button
-        const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = await import("discord.js");
         const embed = new EmbedBuilder()
           .setColor(0x5865f2)
           .setTitle("🎫 Support Tickets")
@@ -4800,6 +4720,59 @@ export function registerPrefixHandler(client: Client): void {
       afkStore.delete(afkKey);
       const reply = await message.reply({ embeds: [successEmbed("Welcome back! Your AFK has been removed.")] }).catch(() => null);
       if (reply) setTimeout(() => reply.delete().catch(() => null), 5000);
+    }
+
+    // ── XP / Leveling ─────────────────────────────────────────────────────
+    if (!message.author.bot) {
+      (async () => {
+        try {
+          const [settings] = await db.select({
+            enabled: levelingSettingsTable.enabled,
+            xpPerMessage: levelingSettingsTable.xpPerMessage,
+            xpCooldownSeconds: levelingSettingsTable.xpCooldownSeconds,
+            levelUpMessage: levelingSettingsTable.levelUpMessage,
+            levelUpChannelId: levelingSettingsTable.levelUpChannelId,
+          }).from(levelingSettingsTable).where(eq(levelingSettingsTable.guildId, guildId)).limit(1);
+
+          if (!settings?.enabled) return;
+
+          const cooldownKey = `${guildId}:${message.author.id}`;
+          const lastXp = xpCooldownStore.get(cooldownKey) ?? 0;
+          const now = Date.now();
+          const cooldownMs = (settings.xpCooldownSeconds ?? 60) * 1000;
+          if (now - lastXp < cooldownMs) return;
+          xpCooldownStore.set(cooldownKey, now);
+
+          const xpGain = settings.xpPerMessage ?? 15;
+          const XP_PER_LEVEL = 100;
+
+          const [existing] = await db.select().from(levelingProgressTable)
+            .where(and(eq(levelingProgressTable.guildId, guildId), eq(levelingProgressTable.userId, message.author.id)))
+            .limit(1);
+
+          const currentXp = (existing?.xp ?? 0) + xpGain;
+          const currentLevel = existing?.level ?? 0;
+          const newLevel = Math.floor(currentXp / XP_PER_LEVEL);
+
+          await db.insert(levelingProgressTable)
+            .values({ guildId, userId: message.author.id, xp: currentXp, level: newLevel, totalMessages: 1, lastMessageAt: new Date() })
+            .onConflictDoUpdate({
+              target: [levelingProgressTable.guildId, levelingProgressTable.userId],
+              set: { xp: currentXp, level: newLevel, totalMessages: sql`${levelingProgressTable.totalMessages} + 1`, lastMessageAt: new Date(), updatedAt: new Date() },
+            });
+
+          if (newLevel > currentLevel) {
+            const lvlMsg = (settings.levelUpMessage ?? "GG {user}, you just reached level {level}!")
+              .replace("{user}", `<@${message.author.id}>`)
+              .replace("{level}", String(newLevel));
+            const lvlChId = settings.levelUpChannelId;
+            const lvlCh = lvlChId
+              ? (message.guild!.channels.cache.get(lvlChId) as TextChannel | null)
+              : (message.channel as TextChannel);
+            if (lvlCh?.isTextBased()) await lvlCh.send(lvlMsg).catch(() => null);
+          }
+        } catch {}
+      })();
     }
 
     if (!message.content.startsWith(guildPrefix)) return;
