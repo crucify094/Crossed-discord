@@ -1,105 +1,126 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { ActivitySquare, Search, Filter } from 'lucide-react';
 import { useStore } from '@/store';
 import { useGetAuditLogs } from '@workspace/api-client-react';
-import { PageHeader, PremiumSelect, PremiumInput } from '@/components/PremiumComponents';
-import { format } from 'date-fns';
+import { PageHeader } from '@/components/PremiumComponents';
+import { formatDistanceToNow } from 'date-fns';
+
+const PAGE_SIZE = 10;
+
+function timeAgo(date: string) {
+  try {
+    return formatDistanceToNow(new Date(date), { addSuffix: false }) + ' ago';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function formatEntry(log: {
+  type: string;
+  executorName?: string | null;
+  targetName?: string | null;
+  createdAt: string;
+  reason?: string | null;
+}, index: number) {
+  const num = String(index + 1).padStart(2, '0');
+  const action = log.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const parts: string[] = [action];
+  if (log.executorName) parts.push(log.executorName);
+  if (log.targetName) parts.push(log.targetName);
+  const time = timeAgo(log.createdAt);
+  return { num, line: parts.join(' — '), time };
+}
 
 export default function AuditLogs() {
   const guildId = useStore((state) => state.selectedGuildId);
-  const [filterType, setFilterType] = useState('');
-  
-  const { data: logs, isLoading } = useGetAuditLogs(guildId || '', { limit: 100, type: filterType || undefined }, { query: { enabled: !!guildId } });
+  const [page, setPage] = useState(1);
+  const [closed, setClosed] = useState(false);
 
-  const getBadgeColor = (type: string) => {
-    if (type.includes('antinuke') || type.includes('ban')) return 'bg-destructive/20 text-destructive border-destructive/30';
-    if (type.includes('antiraid') || type.includes('kick')) return 'bg-orange-500/20 text-orange-500 border-orange-500/30';
-    if (type.includes('warn') || type.includes('automod')) return 'bg-warning/20 text-warning border-warning/30';
-    if (type.includes('settings')) return 'bg-blue-500/20 text-blue-500 border-blue-500/30';
-    return 'bg-primary/20 text-primary border-primary/30';
-  };
+  const { data: logs, isLoading } = useGetAuditLogs(
+    guildId || '',
+    { limit: 100 },
+    { query: { enabled: !!guildId } }
+  );
+
+  if (closed) {
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pb-24 max-w-2xl mx-auto">
+        <div className="glass-panel rounded-2xl p-8 text-center text-muted-foreground">
+          <p>Audit logs closed. <button onClick={() => setClosed(false)} className="text-primary underline">Reopen</button></p>
+        </div>
+      </motion.div>
+    );
+  }
+
+  const allLogs = logs ?? [];
+  const totalPages = Math.max(1, Math.ceil(allLogs.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageEntries = allLogs.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="pb-24 max-w-6xl mx-auto">
-      <div className="flex flex-col md:flex-row md:items-end justify-between mb-8 gap-4">
-        <PageHeader 
-          title="Audit Logs" 
-          description="A complete history of bot actions and security events." 
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="pb-24 max-w-2xl mx-auto">
+      <div className="mb-6">
+        <PageHeader
+          title="Audit Log"
+          description="Recent audit log entries for this server."
         />
-        
-        <div className="flex items-center gap-3 bg-black/20 p-2 rounded-xl border border-white/5 backdrop-blur-md">
-          <div className="relative">
-            <Filter className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <PremiumSelect 
-              value={filterType} 
-              onChange={(e) => setFilterType(e.target.value)}
-              className="pl-9 py-2 border-none bg-transparent"
-            >
-              <option value="">All Events</option>
-              <option value="antinuke_triggered">Anti-Nuke</option>
-              <option value="antiraid_triggered">Anti-Raid</option>
-              <option value="automod_action">Auto-Mod</option>
-              <option value="settings_change">Settings Changed</option>
-            </PremiumSelect>
-          </div>
-        </div>
       </div>
 
       <div className="glass-panel rounded-2xl overflow-hidden shadow-2xl">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[800px]">
-            <thead>
-              <tr className="border-b border-white/10 bg-black/40">
-                <th className="p-4 font-medium text-muted-foreground text-sm">Action Type</th>
-                <th className="p-4 font-medium text-muted-foreground text-sm">Target / Subject</th>
-                <th className="p-4 font-medium text-muted-foreground text-sm">Executed By</th>
-                <th className="p-4 font-medium text-muted-foreground text-sm">Reason / Details</th>
-                <th className="p-4 font-medium text-muted-foreground text-sm text-right">Time</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {isLoading ? (
-                <tr>
-                  <td colSpan={5} className="p-8 text-center text-muted-foreground">Loading logs...</td>
-                </tr>
-              ) : logs?.length ? (
-                logs.map(log => (
-                  <tr key={log.id} className="hover:bg-white/[0.02] transition-colors group">
-                    <td className="p-4">
-                      <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-bold border uppercase tracking-wider ${getBadgeColor(log.type)}`}>
-                        {log.type.replace(/_/g, ' ')}
-                      </span>
-                    </td>
-                    <td className="p-4">
-                      {log.targetName ? (
-                        <div className="font-medium text-white">{log.targetName} <span className="text-xs text-muted-foreground font-mono block">{log.targetId}</span></div>
-                      ) : <span className="text-muted-foreground">-</span>}
-                    </td>
-                    <td className="p-4">
-                      {log.executorName ? (
-                        <div className="font-medium text-white">{log.executorName}</div>
-                      ) : <span className="text-primary font-medium">System / Bot</span>}
-                    </td>
-                    <td className="p-4">
-                      <div className="text-sm text-white">{log.reason || '-'}</div>
-                      {log.details && <div className="text-xs text-muted-foreground truncate max-w-[200px]" title={log.details}>{log.details}</div>}
-                    </td>
-                    <td className="p-4 text-right text-sm text-muted-foreground whitespace-nowrap">
-                      {format(new Date(log.createdAt), 'MMM d, h:mm:ss a')}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={5} className="p-12 text-center text-muted-foreground">
-                    <ActivitySquare className="w-12 h-12 mx-auto mb-4 opacity-20" />
-                    No logs found matching this criteria.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div className="p-6 min-h-[420px] flex flex-col">
+          {isLoading ? (
+            <div className="flex-1 flex items-center justify-center text-muted-foreground">
+              Loading logs...
+            </div>
+          ) : pageEntries.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center text-muted-foreground">
+              No audit log entries found.
+            </div>
+          ) : (
+            <div className="flex-1 space-y-1">
+              {pageEntries.map((log, i) => {
+                const globalIndex = (safePage - 1) * PAGE_SIZE + i;
+                const { num, line, time } = formatEntry(log, globalIndex);
+                return (
+                  <div key={log.id} className="text-sm leading-relaxed">
+                    <span className="text-white font-medium">{num} {line}</span>
+                    <span className="text-muted-foreground"> {time}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="mt-6 pt-4 border-t border-white/10">
+            <div className="text-sm text-muted-foreground mb-3">
+              Page {safePage}/{totalPages}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
+                className="w-12 h-10 rounded-lg bg-[#5865f2] hover:bg-[#4752c4] disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white font-bold text-lg transition-colors"
+                aria-label="Previous page"
+              >
+                ◀
+              </button>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={safePage >= totalPages}
+                className="w-12 h-10 rounded-lg bg-[#5865f2] hover:bg-[#4752c4] disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white font-bold text-lg transition-colors"
+                aria-label="Next page"
+              >
+                ▶
+              </button>
+              <button
+                onClick={() => setClosed(true)}
+                className="w-12 h-10 rounded-lg bg-[#ed4245] hover:bg-[#c03537] flex items-center justify-center text-white font-bold text-lg transition-colors"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </motion.div>

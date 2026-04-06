@@ -38,6 +38,8 @@ export const welcomeSettingsTable = pgTable("welcome_settings", {
   vanityCode: text("vanity_code"),
   vanityRoleId: text("vanity_role_id"),
   guildPrefix: text("guild_prefix"),
+  vcMasterJoinChannelId: text("vc_master_join_channel_id"),
+  vcMasterCategoryId: text("vc_master_category_id"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 

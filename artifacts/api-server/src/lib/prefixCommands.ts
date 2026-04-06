@@ -11,11 +11,13 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   ComponentType,
+  ButtonBuilder,
+  ButtonStyle,
+  OverwriteType,
   type TextChannel,
   type VoiceChannel,
   type GuildChannel,
   type CategoryChannel,
-  type ButtonBuilder,
 } from "discord.js";
 import { logger } from "./logger";
 import { db } from "@workspace/db";
@@ -109,6 +111,24 @@ const antinukeBanTracker = new Map<string, Map<string, number[]>>();
 // Booster role base: `guildId` → baseRoleId (the position anchor)
 const boosterRoleBase = new Map<string, string>();
 
+// VoiceMaster: active user-created VC channels
+// channelId → { ownerId, guildId }
+const vcActiveChannels = new Map<string, { ownerId: string; guildId: string }>();
+// Reverse lookup: `${guildId}:${userId}` → channelId
+const vcOwnerToChannel = new Map<string, string>();
+
+// Log channel cache: guildId → channelId (to avoid DB query every event)
+const logChannelIdCache = new Map<string, { eventLogChannelId: string | null; vcLogChannelId: string | null; ts: number }>();
+const LOG_CHANNEL_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+
+// Antinuke channel delete tracker: guildId → map of executorId → timestamps[]
+const antinukeChannelDeleteTracker = new Map<string, Map<string, number[]>>();
+// Antinuke role delete tracker: guildId → map of executorId → timestamps[]
+const antinukeRoleDeleteTracker = new Map<string, Map<string, number[]>>();
+// Whitelist cache: guildId → Set of whitelisted user IDs
+const whitelistCache = new Map<string, { ids: Set<string>; ts: number }>();
+const WHITELIST_CACHE_TTL = 60 * 1000; // 1 minute
+
 // ── Per-guild caches (avoids DB hit on every message) ─────────────────────────
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 interface CacheEntry<T> { value: T; ts: number }
@@ -166,6 +186,27 @@ function fmtDuration(ms: number): string {
   if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
   if (ms < 604_800_000) return `${Math.floor(ms / 86_400_000)}d`;
   return `${Math.floor(ms / 604_800_000)}w`;
+}
+
+async function isWhitelisted(guildId: string, userId: string): Promise<boolean> {
+  const cached = whitelistCache.get(guildId);
+  if (cached && Date.now() - cached.ts < WHITELIST_CACHE_TTL) {
+    return cached.ids.has(userId);
+  }
+  try {
+    const entries = await db.select({ targetId: antinukeWhitelistTable.targetId })
+      .from(antinukeWhitelistTable)
+      .where(eq(antinukeWhitelistTable.guildId, guildId));
+    const ids = new Set(entries.map(e => e.targetId));
+    whitelistCache.set(guildId, { ids, ts: Date.now() });
+    return ids.has(userId);
+  } catch {
+    return false;
+  }
+}
+
+function invalidateWhitelistCache(guildId: string) {
+  whitelistCache.delete(guildId);
 }
 
 async function resolveMember(msg: Message, q: string): Promise<GuildMember | null> {
@@ -2040,10 +2081,12 @@ register({
       await db.insert(welcomeSettingsTable)
         .values({ guildId: message.guild!.id, eventLogChannelId: channel.id })
         .onConflictDoUpdate({ target: welcomeSettingsTable.guildId, set: { eventLogChannelId: channel.id, updatedAt: new Date() } });
+      logChannelIdCache.delete(message.guild!.id);
     } catch (err) {
       logger.error({ err }, "Failed to save log channel");
+      return void message.reply({ embeds: [errorEmbed("Failed to save log channel. Please try again.")] });
     }
-    await message.reply({ embeds: [successEmbed(`Log channel set to ${channel}. All events (message edits/deletes, reactions, channel changes) will be posted there.`)] });
+    await message.reply({ embeds: [successEmbed(`Log channel set to ${channel}. All server events will now be logged there.`)] });
   },
 });
 
@@ -2066,8 +2109,10 @@ register({
       await db.insert(welcomeSettingsTable)
         .values({ guildId: message.guild!.id, vcLogChannelId: channel.id })
         .onConflictDoUpdate({ target: welcomeSettingsTable.guildId, set: { vcLogChannelId: channel.id, updatedAt: new Date() } });
+      logChannelIdCache.delete(message.guild!.id);
     } catch (err) {
       logger.error({ err }, "Failed to save VC log channel");
+      return void message.reply({ embeds: [errorEmbed("Failed to save VC log channel. Please try again.")] });
     }
     await message.reply({ embeds: [successEmbed(`Voice log channel set to ${channel}. Voice join/leave/switch events will be logged there.`)] });
   },
@@ -3048,8 +3093,9 @@ register({
     const sub = args[0]?.toLowerCase();
 
     if (sub === "add") {
-      if (!args[1]) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}filter add <word>\``)] });
-      const word = args[1].toLowerCase();
+      const phrase = args.slice(1).join(" ").trim().toLowerCase();
+      if (!phrase) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}filter add <word or phrase>\``)] });
+      const word = phrase;
       try {
         const { db } = await import("@workspace/db");
         const { automodSettingsTable } = await import("@workspace/db/schema");
@@ -3064,8 +3110,9 @@ register({
         await message.reply({ embeds: [successEmbed(`Added **"${word}"** to the word filter. Messages containing it will be deleted.`)] });
       } catch (err) { await message.reply({ embeds: [errorEmbed("Failed to update filter.")] }); }
     } else if (sub === "remove") {
-      if (!args[1]) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}filter remove <word>\``)] });
-      const word = args[1].toLowerCase();
+      const phrase = args.slice(1).join(" ").trim().toLowerCase();
+      if (!phrase) return void message.reply({ embeds: [errorEmbed(`Usage: \`${PREFIX}filter remove <word or phrase>\``)] });
+      const word = phrase;
       try {
         const { db } = await import("@workspace/db");
         const { automodSettingsTable } = await import("@workspace/db/schema");
@@ -3315,7 +3362,8 @@ register({
         targetType: "user",
         targetName,
       });
-      await message.reply({ embeds: [successEmbed(`**${targetName}** (\`${userId}\`) has been whitelisted from AntiNuke.`)] });
+      invalidateWhitelistCache(message.guild!.id);
+      await message.reply({ embeds: [successEmbed(`**${targetName}** (\`${userId}\`) has been whitelisted from AntiNuke. They are now exempt from all antinuke detection.`)] });
     } catch (err) {
       logger.error({ err }, "Failed to add antinuke whitelist entry");
       await message.reply({ embeds: [errorEmbed("Failed to add to whitelist.")] });
@@ -3343,6 +3391,7 @@ register({
       if (deleted.length === 0) {
         return void message.reply({ embeds: [warnEmbed(`ID \`${userId}\` was not found on the whitelist.`)] });
       }
+      invalidateWhitelistCache(message.guild!.id);
       await message.reply({ embeds: [successEmbed(`\`${userId}\` has been removed from the AntiNuke whitelist.`)] });
     } catch (err) {
       logger.error({ err }, "Failed to remove antinuke whitelist entry");
@@ -3423,11 +3472,16 @@ register({
     const newPrefix = args[1];
     if (newPrefix.length > 5) return void message.reply({ embeds: [errorEmbed("Prefix must be 5 characters or fewer.")] });
     const guildId = message.guild!.id;
-    await db.insert(welcomeSettingsTable)
-      .values({ guildId, guildPrefix: newPrefix })
-      .onConflictDoUpdate({ target: welcomeSettingsTable.guildId, set: { guildPrefix: newPrefix, updatedAt: new Date() } });
-    guildPrefixes.set(guildId, newPrefix);
-    await message.reply({ embeds: [successEmbed(`Prefix for this server is now \`${newPrefix}\``)] });
+    try {
+      await db.insert(welcomeSettingsTable)
+        .values({ guildId, guildPrefix: newPrefix })
+        .onConflictDoUpdate({ target: welcomeSettingsTable.guildId, set: { guildPrefix: newPrefix, updatedAt: new Date() } });
+      guildPrefixes.set(guildId, newPrefix);
+      await message.reply({ embeds: [successEmbed(`Prefix for this server is now \`${newPrefix}\`. Only affects this server.`)] });
+    } catch (err) {
+      logger.error({ err }, "Failed to save guild prefix");
+      await message.reply({ embeds: [errorEmbed("Failed to save prefix. Please try again.")] });
+    }
   },
 });
 
@@ -3461,11 +3515,18 @@ register({
       return void message.reply({ embeds: [errorEmbed("You need **Manage Server** permission.")] });
     const channelId = args[0]?.match(/\d{17,19}/)?.[0];
     if (!channelId) return void message.reply({ embeds: [errorEmbed("Usage: `-setwelcome <#channel>`")] });
+    const ch = message.guild!.channels.cache.get(channelId);
+    if (!ch?.isTextBased()) return void message.reply({ embeds: [errorEmbed("Invalid text channel.")] });
     const guildId = message.guild!.id;
-    await db.insert(welcomeSettingsTable)
-      .values({ guildId, welcomeChannelId: channelId, welcomeEnabled: true })
-      .onConflictDoUpdate({ target: welcomeSettingsTable.guildId, set: { welcomeChannelId: channelId, welcomeEnabled: true, updatedAt: new Date() } });
-    await message.reply({ embeds: [successEmbed(`Welcome channel set to <#${channelId}>. New members will be pinged there.`)] });
+    try {
+      await db.insert(welcomeSettingsTable)
+        .values({ guildId, welcomeChannelId: channelId, welcomeEnabled: true })
+        .onConflictDoUpdate({ target: welcomeSettingsTable.guildId, set: { welcomeChannelId: channelId, welcomeEnabled: true, updatedAt: new Date() } });
+      await message.reply({ embeds: [successEmbed(`Welcome channel set to <#${channelId}>. New members will be greeted there.`)] });
+    } catch (err) {
+      logger.error({ err }, "Failed to save welcome channel");
+      await message.reply({ embeds: [errorEmbed("Failed to save welcome channel. Please try again.")] });
+    }
   },
 });
 
@@ -4398,6 +4459,209 @@ register({
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
+// ═══════════════════════ VOICE MASTER ════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
+
+function buildVoiceMasterInterface() {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle("🎙️  VoiceMaster Interface")
+    .setDescription("Use the buttons below to control your voice channel.")
+    .addFields({
+      name: "Button Usage",
+      value: [
+        "🔒 — **Lock** the voice channel",
+        "🔓 — **Unlock** the voice channel",
+        "👻 — **Ghost** the voice channel",
+        "👁️ — **Reveal** the voice channel",
+        "🎙️ — **Claim** the voice channel",
+        "🔌 — **Disconnect** a member",
+        "🎮 — **Start** an activity",
+        "ℹ️ — **View** channel information",
+        "➕ — **Increase** the user limit",
+        "➖ — **Decrease** the user limit",
+      ].join("\n"),
+    });
+
+  const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("vc:lock").setEmoji("🔒").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("vc:unlock").setEmoji("🔓").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("vc:ghost").setEmoji("👻").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("vc:reveal").setEmoji("👁️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("vc:claim").setEmoji("🎙️").setStyle(ButtonStyle.Secondary),
+  );
+  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("vc:disconnect").setEmoji("🔌").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("vc:activity").setEmoji("🎮").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("vc:info").setEmoji("ℹ️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("vc:limit_up").setEmoji("➕").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("vc:limit_down").setEmoji("➖").setStyle(ButtonStyle.Secondary),
+  );
+
+  return { embed, components: [row1, row2] };
+}
+
+register({
+  name: "vc",
+  description: "VoiceMaster controls. Use 'setup' to create the system, or manage your active voice channel.",
+  usage: "setup | lock | unlock | reject @user | allow @user | claim | rename <name>",
+  category: "Utility",
+  async execute({ message, args, client }) {
+    const sub = args[0]?.toLowerCase();
+
+    // ── -vc setup ─────────────────────────────────────────────────────────────
+    if (sub === "setup") {
+      if (!requirePerms(message, PermissionFlagsBits.Administrator))
+        return void message.reply({ embeds: [errorEmbed("You need **Administrator** permission.")] });
+
+      const guild = message.guild!;
+      const setupMsg = await message.reply({ embeds: [infoEmbed("⚙️  Setting up VoiceMaster...").setDescription("Creating category, interface channel, and join channel...")] });
+
+      try {
+        // Create the VoiceMaster category
+        const category = await guild.channels.create({
+          name: "🎙️ Voice Master",
+          type: ChannelType.GuildCategory,
+          permissionOverwrites: [
+            { id: guild.id, deny: [PermissionFlagsBits.SendMessages] },
+            { id: client.user!.id, allow: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+          ],
+        });
+
+        // Create the interface text channel (read-only for users)
+        const interfaceCh = await guild.channels.create({
+          name: "🎛️-vc-interface",
+          type: ChannelType.GuildText,
+          parent: category.id,
+          permissionOverwrites: [
+            { id: guild.id, deny: [PermissionFlagsBits.SendMessages] },
+            { id: client.user!.id, allow: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages] },
+          ],
+        });
+
+        // Create the "Join to Create" voice channel
+        const joinCh = await guild.channels.create({
+          name: "➕ Join to Create",
+          type: ChannelType.GuildVoice,
+          parent: category.id,
+        });
+
+        // Post the interface embed
+        const { embed, components } = buildVoiceMasterInterface();
+        await (interfaceCh as import("discord.js").TextChannel).send({ embeds: [embed], components });
+
+        // Save to DB
+        await db.insert(welcomeSettingsTable)
+          .values({ guildId: guild.id, vcMasterJoinChannelId: joinCh.id, vcMasterCategoryId: category.id })
+          .onConflictDoUpdate({
+            target: welcomeSettingsTable.guildId,
+            set: { vcMasterJoinChannelId: joinCh.id, vcMasterCategoryId: category.id, updatedAt: new Date() },
+          });
+
+        await setupMsg.edit({
+          embeds: [successEmbed("VoiceMaster is ready!")
+            .setDescription(`**Category:** ${category}\n**Interface:** ${interfaceCh}\n**Join Channel:** ${joinCh}\n\nUsers who join ${joinCh} will get their own personal voice channel.`)],
+        });
+      } catch (err) {
+        logger.error({ err }, "Failed to setup VoiceMaster");
+        await setupMsg.edit({ embeds: [errorEmbed(`Failed to set up VoiceMaster: ${(err as Error).message}`)] });
+      }
+      return;
+    }
+
+    // ── All other vc subcommands require the user to be in their owned VC ──────
+    const member = message.member as GuildMember;
+    const userVcId = vcOwnerToChannel.get(`${message.guild!.id}:${message.author.id}`);
+    const userVoiceChannelId = member.voice.channelId;
+
+    if (!sub || sub === "help") {
+      return void message.reply({
+        embeds: [infoEmbed("🎙️  VoiceMaster Commands").setDescription(
+          `\`${PREFIX}vc setup\` — Set up the VoiceMaster system (Admin)\n` +
+          `\`${PREFIX}vc lock\` — Lock your voice channel\n` +
+          `\`${PREFIX}vc unlock\` — Unlock your voice channel\n` +
+          `\`${PREFIX}vc reject @user\` — Kick a user from your VC\n` +
+          `\`${PREFIX}vc allow @user\` — Allow a user into your locked VC\n` +
+          `\`${PREFIX}vc claim\` — Claim an ownerless voice channel\n` +
+          `\`${PREFIX}vc rename <name>\` — Rename your voice channel`
+        )],
+      });
+    }
+
+    // Get the VC the user should be operating on
+    const activeVcId = userVcId ?? (userVoiceChannelId && vcActiveChannels.has(userVoiceChannelId) ? userVoiceChannelId : null);
+
+    if (sub === "claim") {
+      // Claim: user must be in a VC that has no owner
+      if (!userVoiceChannelId) return void message.reply({ embeds: [errorEmbed("You must be in a voice channel to claim it.")] });
+      const vcData = vcActiveChannels.get(userVoiceChannelId);
+      if (!vcData) return void message.reply({ embeds: [errorEmbed("This is not a managed voice channel.")] });
+
+      const currentOwnerInVc = member.voice.channel?.members.has(vcData.ownerId);
+      if (currentOwnerInVc) return void message.reply({ embeds: [errorEmbed("The current owner is still in the channel.")] });
+
+      // Transfer ownership
+      const oldOwnerKey = `${vcData.guildId}:${vcData.ownerId}`;
+      vcOwnerToChannel.delete(oldOwnerKey);
+      vcActiveChannels.set(userVoiceChannelId, { ownerId: message.author.id, guildId: message.guild!.id });
+      vcOwnerToChannel.set(`${message.guild!.id}:${message.author.id}`, userVoiceChannelId);
+
+      const vc = message.guild!.channels.cache.get(userVoiceChannelId) as VoiceChannel | null;
+      if (vc) {
+        await vc.setName(member.displayName + "'s channel").catch(() => null);
+      }
+      return void message.reply({ embeds: [successEmbed(`You now own **${vc?.name ?? userVoiceChannelId}**.`)] });
+    }
+
+    if (!activeVcId) return void message.reply({ embeds: [errorEmbed("You don't have an active voice channel. Join **➕ Join to Create** to get one.")] });
+
+    const vc = message.guild!.channels.cache.get(activeVcId) as VoiceChannel | null;
+    if (!vc) return void message.reply({ embeds: [errorEmbed("Your voice channel no longer exists.")] });
+
+    if (vcActiveChannels.get(activeVcId)?.ownerId !== message.author.id) {
+      return void message.reply({ embeds: [errorEmbed("You don't own this voice channel.")] });
+    }
+
+    if (sub === "lock") {
+      await vc.permissionOverwrites.edit(message.guild!.id, { Connect: false }).catch(() => null);
+      return void message.reply({ embeds: [successEmbed(`🔒 **${vc.name}** is now locked.`)] });
+    }
+
+    if (sub === "unlock") {
+      await vc.permissionOverwrites.edit(message.guild!.id, { Connect: true }).catch(() => null);
+      return void message.reply({ embeds: [successEmbed(`🔓 **${vc.name}** is now unlocked.`)] });
+    }
+
+    if (sub === "reject") {
+      const target = await resolveMember(message, args[1] ?? "");
+      if (!target) return void message.reply({ embeds: [errorEmbed("User not found.")] });
+      if (target.voice.channelId === activeVcId) {
+        await target.voice.disconnect("Rejected from VC by owner").catch(() => null);
+      }
+      await vc.permissionOverwrites.edit(target.id, { Connect: false }).catch(() => null);
+      return void message.reply({ embeds: [successEmbed(`🚫 Rejected **${target.user.tag}** from your channel.`)] });
+    }
+
+    if (sub === "allow") {
+      const target = await resolveMember(message, args[1] ?? "");
+      if (!target) return void message.reply({ embeds: [errorEmbed("User not found.")] });
+      await vc.permissionOverwrites.edit(target.id, { Connect: true }).catch(() => null);
+      return void message.reply({ embeds: [successEmbed(`✅ **${target.user.tag}** can now join your locked channel.`)] });
+    }
+
+    if (sub === "rename") {
+      const newName = args.slice(1).join(" ").trim();
+      if (!newName) return void message.reply({ embeds: [errorEmbed("Provide a new name.")] });
+      if (newName.length > 100) return void message.reply({ embeds: [errorEmbed("Name must be 100 characters or fewer.")] });
+      await vc.setName(newName).catch(() => null);
+      return void message.reply({ embeds: [successEmbed(`✏️ Channel renamed to **${newName}**.`)] });
+    }
+
+    await message.reply({ embeds: [errorEmbed(`Unknown subcommand. Use \`${PREFIX}vc help\` for a list.`)] });
+  },
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Handler Registration
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -4581,16 +4845,60 @@ export function registerPrefixHandler(client: Client): void {
     await logCh.send({ embeds: [embed] }).catch(() => null);
   });
 
-  // ── Voice State Log ───────────────────────────────────────────────────────
+  // ── Voice State Log + VoiceMaster ────────────────────────────────────────
   client.on("voiceStateUpdate", async (oldState, newState) => {
     if (newState.member?.user.bot) return;
     const guild = newState.guild ?? oldState.guild;
+    const member = newState.member ?? oldState.member;
+    if (!member) return;
+
+    // ── VoiceMaster: handle "join to create" channel ───────────────────────
+    try {
+      const [vcSettings] = await db.select({
+        vcMasterJoinChannelId: welcomeSettingsTable.vcMasterJoinChannelId,
+        vcMasterCategoryId: welcomeSettingsTable.vcMasterCategoryId,
+      }).from(welcomeSettingsTable).where(eq(welcomeSettingsTable.guildId, guild.id)).limit(1);
+
+      if (vcSettings?.vcMasterJoinChannelId) {
+        // User joined the "Join to Create" channel
+        if (newState.channelId === vcSettings.vcMasterJoinChannelId) {
+          const newVc = await guild.channels.create({
+            name: `${member.displayName}'s channel`,
+            type: ChannelType.GuildVoice,
+            parent: vcSettings.vcMasterCategoryId ?? undefined,
+            permissionOverwrites: [
+              { id: guild.id, allow: [PermissionFlagsBits.Connect] },
+              { id: member.id, allow: [PermissionFlagsBits.Connect, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.DeafenMembers, PermissionFlagsBits.MoveMembers] },
+            ],
+          }).catch(() => null);
+          if (newVc) {
+            await member.voice.setChannel(newVc).catch(() => null);
+            vcActiveChannels.set(newVc.id, { ownerId: member.id, guildId: guild.id });
+            vcOwnerToChannel.set(`${guild.id}:${member.id}`, newVc.id);
+          }
+        }
+
+        // User left a VoiceMaster-managed channel — delete it if empty
+        if (oldState.channelId && oldState.channelId !== vcSettings.vcMasterJoinChannelId) {
+          const vcData = vcActiveChannels.get(oldState.channelId);
+          if (vcData) {
+            const oldVc = guild.channels.cache.get(oldState.channelId) as VoiceChannel | null;
+            if (oldVc && oldVc.members.size === 0) {
+              vcActiveChannels.delete(oldState.channelId);
+              vcOwnerToChannel.delete(`${vcData.guildId}:${vcData.ownerId}`);
+              await oldVc.delete("VoiceMaster: channel empty").catch(() => null);
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // ── VC logging ────────────────────────────────────────────────────────
     const logCh = await getVcLogChannel(client, guild.id);
     if (!logCh) return;
 
-    const member = newState.member ?? oldState.member;
-    const tag = member?.user.tag ?? "Unknown";
-    const mention = `<@${member?.id}>`;
+    const tag = member.user.tag ?? "Unknown";
+    const mention = `<@${member.id}>`;
 
     let title = "";
     let color = 0x5865f2;
@@ -4650,11 +4958,8 @@ export function registerPrefixHandler(client: Client): void {
         const entry = auditLogs.entries.first();
         const executorId = entry?.executorId;
         if (executorId && executorId !== client.user?.id) {
-          const whitelisted = await db.select()
-            .from(antinukeWhitelistTable)
-            .where(and(eq(antinukeWhitelistTable.guildId, ban.guild.id), eq(antinukeWhitelistTable.targetId, executorId)))
-            .limit(1);
-          if (!whitelisted.length) {
+          const wl = await isWhitelisted(ban.guild.id, executorId);
+          if (!wl) {
             if (!antinukeBanTracker.has(ban.guild.id)) antinukeBanTracker.set(ban.guild.id, new Map());
             const guildMap = antinukeBanTracker.get(ban.guild.id)!;
             const prev = guildMap.get(executorId) ?? [];
@@ -5006,17 +5311,49 @@ export function registerPrefixHandler(client: Client): void {
     await logCh.send({ embeds: [embed] }).catch(() => null);
   });
 
-  // ── Channel Delete Log ────────────────────────────────────────────────────
+  // ── Channel Delete Log + AntiNuke ────────────────────────────────────────
   client.on("channelDelete", async (channel) => {
     if (!("guild" in channel) || !channel.guild) return;
-    const logCh = await getEventLogChannel(client, channel.guild.id);
-    if (!logCh) return;
+    const guild = channel.guild;
+
+    let executorId: string | undefined;
     let deletedBy = "Unknown";
     try {
-      const auditLogs = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete });
+      const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete });
       const entry = auditLogs.entries.first();
-      if (entry && entry.targetId === channel.id) deletedBy = entry.executor ? `${entry.executor.tag} (<@${entry.executor.id}>)` : "Unknown";
+      if (entry && entry.targetId === channel.id) {
+        executorId = entry.executorId ?? undefined;
+        deletedBy = entry.executor ? `${entry.executor.tag} (<@${entry.executor.id}>)` : "Unknown";
+      }
     } catch {}
+
+    // AntiNuke: track rapid channel deletions
+    try {
+      const [nukeSettings] = await db.select().from(antinukeSettingsTable).where(eq(antinukeSettingsTable.guildId, guild.id)).limit(1);
+      if (nukeSettings?.enabled && executorId && executorId !== client.user?.id) {
+        const wl = await isWhitelisted(guild.id, executorId);
+        if (!wl) {
+          if (!antinukeChannelDeleteTracker.has(guild.id)) antinukeChannelDeleteTracker.set(guild.id, new Map());
+          const guildMap = antinukeChannelDeleteTracker.get(guild.id)!;
+          const prev = guildMap.get(executorId) ?? [];
+          const now = Date.now();
+          const recent = prev.filter((t) => now - t < 5000);
+          recent.push(now);
+          guildMap.set(executorId, recent);
+          const threshold = nukeSettings.maxChannelDeletes ?? 3;
+          if (recent.length >= threshold) {
+            guildMap.delete(executorId);
+            const executor = await guild.members.fetch(executorId).catch(() => null);
+            if (executor) await executor.ban({ reason: `AntiNuke: mass channel delete (${recent.length} in 5s)` }).catch(() => null);
+            const logCh2 = await getEventLogChannel(client, guild.id);
+            if (logCh2) await logCh2.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🛡️ AntiNuke Triggered").setDescription(`<@${executorId}> was banned for deleting ${recent.length}+ channels within 5 seconds.`).setTimestamp()] }).catch(() => null);
+          }
+        }
+      }
+    } catch {}
+
+    const logCh = await getEventLogChannel(client, guild.id);
+    if (!logCh) return;
     const embed = new EmbedBuilder()
       .setColor(0xed4245)
       .setTitle("🗑️ Channel Deleted")
@@ -5081,16 +5418,47 @@ export function registerPrefixHandler(client: Client): void {
     await logCh.send({ embeds: [embed] }).catch(() => null);
   });
 
-  // ── Role Delete Log ───────────────────────────────────────────────────────
+  // ── Role Delete Log + AntiNuke ────────────────────────────────────────────
   client.on("roleDelete", async (role) => {
-    const logCh = await getEventLogChannel(client, role.guild.id);
-    if (!logCh) return;
+    const guild = role.guild;
+    let executorId: string | undefined;
     let deletedBy = "Unknown";
     try {
-      const auditLogs = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete });
+      const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete });
       const entry = auditLogs.entries.first();
-      if (entry && entry.targetId === role.id) deletedBy = entry.executor ? `${entry.executor.tag} (<@${entry.executor.id}>)` : "Unknown";
+      if (entry && entry.targetId === role.id) {
+        executorId = entry.executorId ?? undefined;
+        deletedBy = entry.executor ? `${entry.executor.tag} (<@${entry.executor.id}>)` : "Unknown";
+      }
     } catch {}
+
+    // AntiNuke: track rapid role deletions
+    try {
+      const [nukeSettings] = await db.select().from(antinukeSettingsTable).where(eq(antinukeSettingsTable.guildId, guild.id)).limit(1);
+      if (nukeSettings?.enabled && executorId && executorId !== client.user?.id) {
+        const wl = await isWhitelisted(guild.id, executorId);
+        if (!wl) {
+          if (!antinukeRoleDeleteTracker.has(guild.id)) antinukeRoleDeleteTracker.set(guild.id, new Map());
+          const guildMap = antinukeRoleDeleteTracker.get(guild.id)!;
+          const prev = guildMap.get(executorId) ?? [];
+          const now = Date.now();
+          const recent = prev.filter((t) => now - t < 5000);
+          recent.push(now);
+          guildMap.set(executorId, recent);
+          const threshold = nukeSettings.maxRoleDeletes ?? 3;
+          if (recent.length >= threshold) {
+            guildMap.delete(executorId);
+            const executor = await guild.members.fetch(executorId).catch(() => null);
+            if (executor) await executor.ban({ reason: `AntiNuke: mass role delete (${recent.length} in 5s)` }).catch(() => null);
+            const logCh2 = await getEventLogChannel(client, guild.id);
+            if (logCh2) await logCh2.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🛡️ AntiNuke Triggered").setDescription(`<@${executorId}> was banned for deleting ${recent.length}+ roles within 5 seconds.`).setTimestamp()] }).catch(() => null);
+          }
+        }
+      }
+    } catch {}
+
+    const logCh = await getEventLogChannel(client, guild.id);
+    if (!logCh) return;
     const embed = new EmbedBuilder()
       .setColor(0xed4245)
       .setTitle("🗑️ Role Deleted")
@@ -5268,16 +5636,115 @@ export function registerPrefixHandler(client: Client): void {
       }).catch(() => null);
     } catch {}
   });
+
+  // ── VoiceMaster Button Interactions ──────────────────────────────────────
+  client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton()) return;
+    if (!interaction.customId.startsWith("vc:")) return;
+    await interaction.deferReply({ ephemeral: true });
+
+    const guild = interaction.guild;
+    const member = interaction.member as GuildMember | null;
+    if (!guild || !member) return void interaction.editReply({ content: "❌ Could not find guild/member." });
+
+    const action = interaction.customId.slice(3);
+    const userVcId = vcOwnerToChannel.get(`${guild.id}:${interaction.user.id}`);
+    const memberVcId = member.voice?.channelId ?? null;
+
+    // For "claim": the user needs to be in a managed VC (doesn't have to own it)
+    if (action === "claim") {
+      if (!memberVcId) return void interaction.editReply({ content: "❌ You must be in a voice channel to claim it." });
+      const vcData = vcActiveChannels.get(memberVcId);
+      if (!vcData) return void interaction.editReply({ content: "❌ This is not a managed voice channel." });
+      const currentOwnerInVc = (guild.channels.cache.get(memberVcId) as VoiceChannel | null)?.members.has(vcData.ownerId);
+      if (currentOwnerInVc) return void interaction.editReply({ content: "❌ The current owner is still in the channel." });
+      const oldKey = `${vcData.guildId}:${vcData.ownerId}`;
+      vcOwnerToChannel.delete(oldKey);
+      vcActiveChannels.set(memberVcId, { ownerId: interaction.user.id, guildId: guild.id });
+      vcOwnerToChannel.set(`${guild.id}:${interaction.user.id}`, memberVcId);
+      const vc = guild.channels.cache.get(memberVcId) as VoiceChannel | null;
+      await vc?.setName(member.displayName + "'s channel").catch(() => null);
+      return void interaction.editReply({ content: `✅ You now own **${vc?.name ?? memberVcId}**.` });
+    }
+
+    const activeVcId = userVcId ?? (memberVcId && vcActiveChannels.has(memberVcId) ? memberVcId : null);
+    if (!activeVcId) return void interaction.editReply({ content: "❌ You don't have an active voice channel. Join **➕ Join to Create** to get one." });
+    const vc = guild.channels.cache.get(activeVcId) as VoiceChannel | null;
+    if (!vc) return void interaction.editReply({ content: "❌ Your voice channel no longer exists." });
+    if (vcActiveChannels.get(activeVcId)?.ownerId !== interaction.user.id)
+      return void interaction.editReply({ content: "❌ You don't own this voice channel." });
+
+    if (action === "lock") {
+      await vc.permissionOverwrites.edit(guild.id, { Connect: false }).catch(() => null);
+      return void interaction.editReply({ content: "🔒 Channel locked." });
+    }
+    if (action === "unlock") {
+      await vc.permissionOverwrites.edit(guild.id, { Connect: true }).catch(() => null);
+      return void interaction.editReply({ content: "🔓 Channel unlocked." });
+    }
+    if (action === "ghost") {
+      await vc.permissionOverwrites.edit(guild.id, { ViewChannel: false }).catch(() => null);
+      return void interaction.editReply({ content: "👻 Channel hidden." });
+    }
+    if (action === "reveal") {
+      await vc.permissionOverwrites.edit(guild.id, { ViewChannel: true }).catch(() => null);
+      return void interaction.editReply({ content: "👁️ Channel visible." });
+    }
+    if (action === "info") {
+      const members = vc.members.map((m) => m.toString()).join(", ") || "No one";
+      const ownerData = vcActiveChannels.get(activeVcId);
+      const ownerTag = guild.members.cache.get(ownerData?.ownerId ?? "")?.user.tag ?? "Unknown";
+      return void interaction.editReply({ content: `**${vc.name}**\n👑 Owner: ${ownerTag}\n👥 Members: ${members}\n🔢 Limit: ${vc.userLimit || "None"}\n🔒 Locked: ${vc.permissionsFor(guild.id)?.has(PermissionFlagsBits.Connect) === false ? "Yes" : "No"}` });
+    }
+    if (action === "limit_up") {
+      const newLimit = Math.min((vc.userLimit || 0) + 1, 99);
+      await vc.setUserLimit(newLimit).catch(() => null);
+      return void interaction.editReply({ content: `➕ User limit set to **${newLimit}**.` });
+    }
+    if (action === "limit_down") {
+      const newLimit = Math.max((vc.userLimit || 1) - 1, 0);
+      await vc.setUserLimit(newLimit).catch(() => null);
+      return void interaction.editReply({ content: `➖ User limit set to **${newLimit === 0 ? "unlimited" : newLimit}**.` });
+    }
+    if (action === "disconnect") {
+      const membersInVc = [...vc.members.values()].filter((m) => m.id !== interaction.user.id);
+      if (!membersInVc.length) return void interaction.editReply({ content: "❌ No other members in your channel." });
+      return void interaction.editReply({
+        content: "Mention the user you want to disconnect by typing their @username in chat, then use `-vc reject @user`.",
+      });
+    }
+    if (action === "activity") {
+      return void interaction.editReply({ content: "🎮 Use Discord's native **Activities** button in the voice channel toolbar to start an activity." });
+    }
+
+    await interaction.editReply({ content: "❌ Unknown action." });
+  });
 }
 
 // ── Log channel helpers ───────────────────────────────────────────────────────
 
 async function getEventLogChannel(client: Client, guildId: string): Promise<TextChannel | null> {
   try {
-    const [row] = await db.select({ eventLogChannelId: welcomeSettingsTable.eventLogChannelId })
-      .from(welcomeSettingsTable).where(eq(welcomeSettingsTable.guildId, guildId)).limit(1);
-    if (!row?.eventLogChannelId) return null;
-    const ch = await client.channels.fetch(row.eventLogChannelId);
+    const cached = logChannelIdCache.get(guildId);
+    const eventChannelId = cached?.eventLogChannelId !== undefined ? cached.eventLogChannelId : null;
+    if (eventChannelId === null && cached) return null;
+
+    if (!cached) {
+      const [row] = await db.select({ eventLogChannelId: welcomeSettingsTable.eventLogChannelId })
+        .from(welcomeSettingsTable).where(eq(welcomeSettingsTable.guildId, guildId)).limit(1);
+      logChannelIdCache.set(guildId, {
+        eventLogChannelId: row?.eventLogChannelId ?? null,
+        vcLogChannelId: null,
+        ts: Date.now(),
+      });
+      if (!row?.eventLogChannelId) return null;
+      const ch = await client.channels.fetch(row.eventLogChannelId);
+      if (ch?.isTextBased() && "send" in ch) return ch as TextChannel;
+      return null;
+    }
+
+    if (!cached.eventLogChannelId) return null;
+    const ch = await client.channels.fetch(cached.eventLogChannelId);
     if (ch?.isTextBased() && "send" in ch) return ch as TextChannel;
     return null;
   } catch {
@@ -5287,9 +5754,22 @@ async function getEventLogChannel(client: Client, guildId: string): Promise<Text
 
 async function getVcLogChannel(client: Client, guildId: string): Promise<TextChannel | null> {
   try {
-    const [row] = await db.select({ vcLogChannelId: welcomeSettingsTable.vcLogChannelId, eventLogChannelId: welcomeSettingsTable.eventLogChannelId })
-      .from(welcomeSettingsTable).where(eq(welcomeSettingsTable.guildId, guildId)).limit(1);
-    const channelId = row?.vcLogChannelId ?? row?.eventLogChannelId;
+    const cached = logChannelIdCache.get(guildId);
+    if (!cached) {
+      const [row] = await db.select({ vcLogChannelId: welcomeSettingsTable.vcLogChannelId, eventLogChannelId: welcomeSettingsTable.eventLogChannelId })
+        .from(welcomeSettingsTable).where(eq(welcomeSettingsTable.guildId, guildId)).limit(1);
+      logChannelIdCache.set(guildId, {
+        eventLogChannelId: row?.eventLogChannelId ?? null,
+        vcLogChannelId: row?.vcLogChannelId ?? null,
+        ts: Date.now(),
+      });
+      const channelId = row?.vcLogChannelId ?? row?.eventLogChannelId;
+      if (!channelId) return null;
+      const ch = await client.channels.fetch(channelId);
+      if (ch?.isTextBased() && "send" in ch) return ch as TextChannel;
+      return null;
+    }
+    const channelId = cached.vcLogChannelId ?? cached.eventLogChannelId;
     if (!channelId) return null;
     const ch = await client.channels.fetch(channelId);
     if (ch?.isTextBased() && "send" in ch) return ch as TextChannel;
