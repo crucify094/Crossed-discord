@@ -278,19 +278,30 @@ register({
     for (const c of unique.values()) (cats[c.category] ??= []).push(c);
 
     const catEmojis: Record<string, string> = {
-      General: "🎮",
+      General:    "🎮",
       Moderation: "🛡️",
-      Leveling: "⭐",
-      Giveaway: "🎉",
-      Utility: "🔧",
+      Leveling:   "⭐",
+      Giveaway:   "🎉",
+      Utility:    "🔧",
+      Security:   "🔐",
+      Setup:      "⚙️",
+      Owner:      "👑",
+      Engagement: "🏆",
     };
+
+    // Sort categories into a consistent order
+    const CAT_ORDER = ["General", "Moderation", "Security", "Setup", "Utility", "Leveling", "Giveaway", "Engagement", "Owner"];
+    const sortedCatKeys = [
+      ...CAT_ORDER.filter((c) => cats[c]),
+      ...Object.keys(cats).filter((c) => !CAT_ORDER.includes(c)),
+    ];
 
     // ── Build select menu ──
     const menu = new StringSelectMenuBuilder()
       .setCustomId("help_category")
       .setPlaceholder("Choose a category to browse commands…")
       .addOptions(
-        Object.keys(cats).map((cat) =>
+        sortedCatKeys.map((cat) =>
           new StringSelectMenuOptionBuilder()
             .setLabel(cat)
             .setValue(cat)
@@ -301,15 +312,20 @@ register({
 
     const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
 
+    // ── Overview embed with category quick-list ──
+    const catSummary = sortedCatKeys
+      .map((c) => `${catEmojis[c] ?? "📌"} **${c}** — ${cats[c].length} cmd${cats[c].length !== 1 ? "s" : ""}`)
+      .join("\n");
+
     const overviewEmbed = new EmbedBuilder()
       .setColor(COLORS.primary)
       .setTitle("📋  Command Menu")
       .setDescription(
         `Prefix: \`${PREFIX}\`  •  Use \`${PREFIX}help <command>\` for details\n\n` +
-        `**${unique.size} commands** across **${Object.keys(cats).length} categories**\n` +
-        `Select a category below to browse commands.`
+        catSummary +
+        `\n\n*Select a category below to see its commands.*`
       )
-      .setFooter({ text: `Requested by ${message.author.tag}` })
+      .setFooter({ text: `${unique.size} total commands  •  Requested by ${message.author.tag}` })
       .setTimestamp();
 
     const reply = await message.reply({ embeds: [overviewEmbed], components: [row] });
@@ -318,19 +334,29 @@ register({
     const collector = reply.createMessageComponentCollector({
       componentType: ComponentType.StringSelect,
       filter: (i) => i.user.id === message.author.id,
-      time: 60_000,
+      time: 120_000,
     });
 
     collector.on("collect", async (interaction) => {
       const selected = interaction.values[0];
-      const cmds = cats[selected] ?? [];
-      const list = cmds.map((c) => `\`${PREFIX}${c.name}\``).join("  ");
+      const cmds = (cats[selected] ?? []).sort((a, b) => a.name.localeCompare(b.name));
+
+      // Build fields: group commands 8 per field to avoid hitting 1024-char embed limits
+      const CHUNK = 8;
+      const fields: { name: string; value: string }[] = [];
+      for (let i = 0; i < cmds.length; i += CHUNK) {
+        const chunk = cmds.slice(i, i + CHUNK);
+        fields.push({
+          name: i === 0 ? `Commands (${cmds.length})` : "\u200b",
+          value: chunk.map((c) => `\`${PREFIX}${c.name}\` — ${c.description}`).join("\n"),
+        });
+      }
 
       const catEmbed = new EmbedBuilder()
         .setColor(COLORS.primary)
         .setTitle(`${catEmojis[selected] ?? "📌"}  ${selected} Commands`)
-        .setDescription(list || "No commands.")
-        .setFooter({ text: `${cmds.length} command${cmds.length !== 1 ? "s" : ""}  •  Use ${PREFIX}help <command> for details` });
+        .addFields(fields.length ? fields : [{ name: "Commands", value: "No commands." }])
+        .setFooter({ text: `Use ${PREFIX}help <command> for detailed usage` });
 
       await interaction.update({ embeds: [catEmbed], components: [row] });
     });
