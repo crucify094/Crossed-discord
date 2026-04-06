@@ -4348,18 +4348,111 @@ register({
 
 register({
   name: "server",
-  description: "Save or load a server template by number. Server owner only.",
-  usage: "create {number} | dump {number}",
+  description: "Save, restore, or load a server template. Server owner only.",
+  usage: "save | restore | create {number} | dump {number}",
   category: "Security",
   async execute({ message, args }) {
     if (message.guild!.ownerId !== message.author.id)
       return void message.reply({ embeds: [errorEmbed("🔒 Only the **server owner** can use this command.")] });
 
     const subCmd = args[0]?.toLowerCase();
+
+    // ── -server save ──────────────────────────────────────────────────────────
+    if (subCmd === "save") {
+      const guild = message.guild!;
+      const saving = await message.reply({ embeds: [infoEmbed("Saving server...").setDescription("Capturing all channels, categories and permissions...")] });
+      try {
+        const snapshot = await captureServerSnapshot(guild);
+        const data = JSON.stringify(snapshot);
+        await db.delete(serverSnapshotTable)
+          .where(and(eq(serverSnapshotTable.guildId, guild.id), eq(serverSnapshotTable.slot, 0)));
+        await db.insert(serverSnapshotTable).values({ guildId: guild.id, slot: 0, data });
+        await saving.edit({ embeds: [successEmbed(`Server saved! Captured **${snapshot.categories.length}** categories and **${snapshot.channels.length}** channels. Use \`-server restore\` or \`-restore server\` to restore.`)] });
+      } catch (err) {
+        logger.error({ err }, "Failed to save server snapshot");
+        await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}`)] });
+      }
+      return;
+    }
+
+    // ── -server restore ───────────────────────────────────────────────────────
+    if (subCmd === "restore") {
+      const guild = message.guild!;
+      const [row] = await db.select().from(serverSnapshotTable)
+        .where(and(eq(serverSnapshotTable.guildId, guild.id), eq(serverSnapshotTable.slot, 0)))
+        .limit(1);
+      if (!row) return void message.reply({ embeds: [errorEmbed("No server save found. Use `-server save` or `-save server` first.")] });
+
+      const restoring = await message.reply({ embeds: [infoEmbed("Restoring server...").setDescription("Detecting nuker, banning, and rebuilding missing channels...")] });
+
+      // Detect nuker via recent channel delete audit logs
+      const nukerIds = new Set<string>();
+      try {
+        const auditLogs = await guild.fetchAuditLogs({ limit: 50, type: AuditLogEvent.ChannelDelete });
+        const cutoff = Date.now() - 10 * 60 * 1000;
+        const counts = new Map<string, number>();
+        for (const entry of auditLogs.entries.values()) {
+          if (entry.createdTimestamp < cutoff) continue;
+          if (!entry.executorId || entry.executorId === message.client.user?.id) continue;
+          counts.set(entry.executorId, (counts.get(entry.executorId) ?? 0) + 1);
+        }
+        const roleLogs = await guild.fetchAuditLogs({ limit: 50, type: AuditLogEvent.RoleDelete });
+        for (const entry of roleLogs.entries.values()) {
+          if (entry.createdTimestamp < cutoff) continue;
+          if (!entry.executorId || entry.executorId === message.client.user?.id) continue;
+          counts.set(entry.executorId, (counts.get(entry.executorId) ?? 0) + 1);
+        }
+        for (const [id, count] of counts) {
+          if (count >= 2) nukerIds.add(id);
+        }
+      } catch {}
+
+      const bannedNames: string[] = [];
+      for (const nukerId of nukerIds) {
+        try {
+          const nukerUser = await message.client.users.fetch(nukerId).catch(() => null);
+          const nukerMember = await guild.members.fetch(nukerId).catch(() => null);
+          for (const [, ch] of guild.channels.cache) {
+            if (!ch.isTextBased() || ch.type === ChannelType.GuildCategory) continue;
+            try {
+              const textCh = ch as import("discord.js").TextChannel;
+              const msgs = await textCh.messages.fetch({ limit: 100 });
+              const toDelete = msgs.filter(m => m.author.id === nukerId);
+              if (toDelete.size > 0) await textCh.bulkDelete(toDelete).catch(() => null);
+            } catch {}
+          }
+          if (nukerMember) {
+            await nukerMember.ban({ reason: "AntiNuke: server nuke detected - auto banned during restore" }).catch(() => null);
+          } else {
+            await guild.bans.create(nukerId, { reason: "AntiNuke: server nuke detected - auto banned during restore" }).catch(() => null);
+          }
+          bannedNames.push(nukerUser?.tag ?? nukerId);
+        } catch {}
+      }
+
+      let created = 0; let skipped = 0;
+      try {
+        const snapshot: ServerSnapshot = JSON.parse(row.data);
+        const result = await applySnapshot(guild, snapshot, true);
+        created = result.created; skipped = result.skipped;
+      } catch (err) {
+        logger.error({ err }, "Failed to apply server snapshot");
+        await restoring.edit({ embeds: [errorEmbed("Failed to restore server channels.")] });
+        return;
+      }
+
+      const banText = bannedNames.length > 0 ? `\n🔨 **Banned:** ${bannedNames.join(", ")}` : "\n⚠️ No nuker detected in recent audit logs.";
+      await restoring.edit({
+        embeds: [successEmbed(`Server restored!`)
+          .setDescription(`✅ Created **${created}** missing channels/categories.\n⏭️ Skipped **${skipped}** existing ones (no duplicates).${banText}`)],
+      });
+      return;
+    }
+
     const slotArg = parseInt(args[1] ?? "", 10);
 
     if (subCmd !== "create" && subCmd !== "dump")
-      return void message.reply({ embeds: [errorEmbed("Usage: `-server create {number}` or `-server dump {number}`")] });
+      return void message.reply({ embeds: [errorEmbed("Usage: `-server save` | `-server restore` | `-server create {number}` | `-server dump {number}`")] });
     if (isNaN(slotArg) || slotArg < 1 || slotArg > 999)
       return void message.reply({ embeds: [errorEmbed("Slot must be a number between 1 and 999.")] });
 

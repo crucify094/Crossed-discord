@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   Terminal, ChevronDown, ChevronUp, Search, Slash,
   Shield, Star, Swords, Users, Settings, BookOpen, Ticket,
+  Server, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { customFetch } from '@workspace/api-client-react';
@@ -34,6 +35,7 @@ interface PrefixCommand {
 // ── Static prefix command list ────────────────────────────────────────────────
 
 const PREFIX = '-';
+const COMMANDS_PER_PAGE = 10;
 
 const PREFIX_COMMANDS: PrefixCommand[] = [
   // General
@@ -112,6 +114,11 @@ const PREFIX_COMMANDS: PrefixCommand[] = [
   { name: 'whitelistlist', aliases: ['wl'], description: 'Shows all whitelisted users for AntiNuke.', usage: '', category: 'Security' },
   { name: 'editantinuke', description: 'Enables or disables the AntiNuke system.', usage: 'enable | disable', category: 'Security' },
   { name: 'antinuke', description: 'Shows current AntiNuke settings.', usage: '', category: 'Security' },
+  // Server Backup
+  { name: 'save server', description: 'Saves the full server structure (channels, categories, permissions). Server owner only.', usage: '', category: 'Server Backup' },
+  { name: 'restore server', aliases: ['server restore'], description: 'Restores missing channels/categories from your last save. Only adds what\'s missing — no duplicates. Server owner only.', usage: '', category: 'Server Backup' },
+  { name: 'server create', description: 'Saves a named server snapshot to a numbered slot (1–999).', usage: '<slot number>', category: 'Server Backup' },
+  { name: 'server dump', description: 'Loads a saved snapshot from a slot, adding any missing channels.', usage: '<slot number>', category: 'Server Backup' },
   // Leveling
   { name: 'rank', aliases: ['level', 'xp'], description: 'Shows the leveling rank of a member.', usage: '[@user]', category: 'Leveling' },
   { name: 'leaderboard', aliases: ['lb', 'top'], description: 'Shows the top 10 members by XP.', usage: '', category: 'Leveling' },
@@ -134,6 +141,7 @@ const CATEGORIES = [
   { name: 'General', icon: <Users className="w-4 h-4" />, color: 'text-blue-400' },
   { name: 'Moderation', icon: <Shield className="w-4 h-4" />, color: 'text-yellow-400' },
   { name: 'Security', icon: <Swords className="w-4 h-4" />, color: 'text-red-400' },
+  { name: 'Server Backup', icon: <Server className="w-4 h-4" />, color: 'text-cyan-400' },
   { name: 'Leveling', icon: <Star className="w-4 h-4" />, color: 'text-purple-400' },
   { name: 'Tickets', icon: <Ticket className="w-4 h-4" />, color: 'text-green-400' },
   { name: 'Setup', icon: <Settings className="w-4 h-4" />, color: 'text-orange-400' },
@@ -143,6 +151,7 @@ const CATEGORY_STYLE: Record<string, string> = {
   General: 'bg-blue-500/10 border-blue-500/20 text-blue-400',
   Moderation: 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400',
   Security: 'bg-red-500/10 border-red-500/20 text-red-400',
+  'Server Backup': 'bg-cyan-500/10 border-cyan-500/20 text-cyan-400',
   Leveling: 'bg-purple-500/10 border-purple-500/20 text-purple-400',
   Tickets: 'bg-green-500/10 border-green-500/20 text-green-400',
   Setup: 'bg-orange-500/10 border-orange-500/20 text-orange-400',
@@ -255,6 +264,62 @@ function PrefixCommandCard({ cmd }: { cmd: PrefixCommand }) {
   );
 }
 
+// ── Pagination Controls ────────────────────────────────────────────────────────
+
+function Pagination({ page, totalPages, onPage }: { page: number; totalPages: number; onPage: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+
+  const pages: (number | '...')[] = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (page > 3) pages.push('...');
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
+    if (page < totalPages - 2) pages.push('...');
+    pages.push(totalPages);
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-1 pt-4 border-t border-white/5">
+      <button
+        onClick={() => onPage(page - 1)}
+        disabled={page === 1}
+        className="p-2 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        <ChevronLeft className="w-4 h-4" />
+      </button>
+
+      {pages.map((p, i) =>
+        p === '...' ? (
+          <span key={`ellipsis-${i}`} className="px-2 text-muted-foreground text-sm">…</span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onPage(p as number)}
+            className={cn(
+              'w-8 h-8 rounded-lg text-sm font-medium transition-all',
+              page === p
+                ? 'bg-primary/20 text-primary border border-primary/30'
+                : 'text-muted-foreground hover:text-white hover:bg-white/5'
+            )}
+          >
+            {p}
+          </button>
+        )
+      )}
+
+      <button
+        onClick={() => onPage(page + 1)}
+        disabled={page === totalPages}
+        className="p-2 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        <ChevronRight className="w-4 h-4" />
+      </button>
+    </div>
+  );
+}
+
 // ── App Command Card ───────────────────────────────────────────────────────────
 
 function AppCommandCard({ cmd, guildId }: { cmd: AppCommand; guildId: string }) {
@@ -330,6 +395,10 @@ export default function Commands() {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
   const [tab, setTab] = useState<Tab>('prefix');
+  const [page, setPage] = useState(1);
+
+  // Reset to page 1 when filters change
+  useEffect(() => { setPage(1); }, [search, category, tab]);
 
   const { data: appCommandsRaw = [], isLoading } = useQuery({
     queryKey: ['commands', guildId],
@@ -368,17 +437,19 @@ export default function Commands() {
     return counts;
   }, []);
 
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(filteredPrefix.length / COMMANDS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const pageCommands = filteredPrefix.slice((safePage - 1) * COMMANDS_PER_PAGE, safePage * COMMANDS_PER_PAGE);
+
+  // Group the current page's commands by category for display
   const grouped = useMemo(() => {
-    if (category !== 'All' || search) {
-      const key = search ? 'Results' : category;
-      return { [key]: filteredPrefix };
-    }
     const g: Record<string, PrefixCommand[]> = {};
-    for (const cmd of filteredPrefix) {
+    for (const cmd of pageCommands) {
       (g[cmd.category] ??= []).push(cmd);
     }
     return g;
-  }, [filteredPrefix, category, search]);
+  }, [pageCommands]);
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 pb-24">
@@ -424,11 +495,13 @@ export default function Commands() {
             />
           </div>
           <span className="text-xs text-muted-foreground shrink-0">
-            {tab === 'prefix' ? `${filteredPrefix.length} command${filteredPrefix.length !== 1 ? 's' : ''}` : `${filteredApp.length} command${filteredApp.length !== 1 ? 's' : ''}`}
+            {tab === 'prefix'
+              ? `${filteredPrefix.length} command${filteredPrefix.length !== 1 ? 's' : ''}`
+              : `${filteredApp.length} command${filteredApp.length !== 1 ? 's' : ''}`}
           </span>
         </div>
 
-        {/* Prefix Commands — grouped */}
+        {/* Prefix Commands — paginated + grouped */}
         {tab === 'prefix' && (
           filteredPrefix.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
@@ -436,24 +509,28 @@ export default function Commands() {
               <p className="font-medium">No commands match your search.</p>
             </div>
           ) : (
-            <div className="space-y-8">
-              {Object.entries(grouped).map(([section, cmds]) => (
-                <div key={section}>
-                  {Object.keys(grouped).length > 1 && (
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className={cn('text-xs font-bold uppercase tracking-wider', CATEGORY_STYLE[section]?.split(' ').at(-1) ?? 'text-muted-foreground')}>
-                        {section}
-                      </span>
-                      <span className="text-xs text-muted-foreground">({cmds.length})</span>
-                      <div className="flex-1 h-px bg-white/5" />
+            <>
+              <div className="space-y-8">
+                {Object.entries(grouped).map(([section, cmds]) => (
+                  <div key={section}>
+                    {Object.keys(grouped).length > 1 && (
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className={cn('text-xs font-bold uppercase tracking-wider', CATEGORY_STYLE[section]?.split(' ').at(-1) ?? 'text-muted-foreground')}>
+                          {section}
+                        </span>
+                        <span className="text-xs text-muted-foreground">({cmds.length})</span>
+                        <div className="flex-1 h-px bg-white/5" />
+                      </div>
+                    )}
+                    <div className="flex flex-col gap-2">
+                      {cmds.map((cmd) => <PrefixCommandCard key={cmd.name} cmd={cmd} />)}
                     </div>
-                  )}
-                  <div className="flex flex-col gap-2">
-                    {cmds.map((cmd) => <PrefixCommandCard key={cmd.name} cmd={cmd} />)}
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+
+              <Pagination page={safePage} totalPages={totalPages} onPage={setPage} />
+            </>
           )
         )}
 
