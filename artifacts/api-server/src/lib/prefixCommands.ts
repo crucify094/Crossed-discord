@@ -284,41 +284,85 @@ register({
     for (const c of unique.values()) (cats[c.category] ??= []).push(c);
 
     const catEmojis: Record<string, string> = {
-      General:    "🎮",
-      Moderation: "🛡️",
-      Leveling:   "⭐",
-      Giveaway:   "🎉",
-      Utility:    "🔧",
-      Security:   "🔐",
-      Setup:      "⚙️",
-      Owner:      "👑",
-      Engagement: "🏆",
+      General:      "🎮",
+      Moderation:   "🛡️",
+      Leveling:     "⭐",
+      Giveaway:     "🎉",
+      Utility:      "🔧",
+      Security:     "🔐",
+      "Server Backup": "💾",
+      Setup:        "⚙️",
+      Owner:        "👑",
+      Engagement:   "🏆",
     };
 
-    // Sort categories into a consistent order
-    const CAT_ORDER = ["General", "Moderation", "Security", "Setup", "Utility", "Leveling", "Giveaway", "Engagement", "Owner"];
+    const CAT_ORDER = ["General", "Moderation", "Security", "Server Backup", "Setup", "Utility", "Leveling", "Giveaway", "Engagement", "Owner"];
     const sortedCatKeys = [
       ...CAT_ORDER.filter((c) => cats[c]),
       ...Object.keys(cats).filter((c) => !CAT_ORDER.includes(c)),
     ];
 
-    // ── Build select menu ──
-    const menu = new StringSelectMenuBuilder()
-      .setCustomId("help_category")
-      .setPlaceholder("Choose a category to browse commands…")
-      .addOptions(
-        sortedCatKeys.map((cat) =>
-          new StringSelectMenuOptionBuilder()
-            .setLabel(cat)
-            .setValue(cat)
-            .setDescription(`${cats[cat].length} command${cats[cat].length !== 1 ? "s" : ""}`)
-            .setEmoji(catEmojis[cat] ?? "📌")
-        )
-      );
+    const CMDS_PER_PAGE = 8;
 
-    const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
-    // ── Overview embed with category quick-list ──
+    function buildCategoryEmbed(selected: string, cmds: Command[], page: number): EmbedBuilder {
+      const totalPages = Math.max(1, Math.ceil(cmds.length / CMDS_PER_PAGE));
+      const pageCmds = cmds.slice(page * CMDS_PER_PAGE, (page + 1) * CMDS_PER_PAGE);
+      return new EmbedBuilder()
+        .setColor(COLORS.primary)
+        .setTitle(`${catEmojis[selected] ?? "📌"}  ${selected} Commands`)
+        .addFields([{
+          name: `Commands (${cmds.length})`,
+          value: pageCmds.map((c) => `\`${PREFIX}${c.name}\` — ${c.description}`).join("\n") || "No commands.",
+        }])
+        .setFooter({ text: `Page ${page + 1} of ${totalPages}  •  Use ${PREFIX}help <command> for detailed usage` });
+    }
+
+    function buildComponents(selectedCat: string | null, page: number): ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] {
+      const rows: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [];
+
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId("help_category")
+        .setPlaceholder("Choose a category to browse commands…")
+        .addOptions(
+          sortedCatKeys.map((cat) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(cat)
+              .setValue(cat)
+              .setDescription(`${cats[cat].length} command${cats[cat].length !== 1 ? "s" : ""}`)
+              .setEmoji(catEmojis[cat] ?? "📌")
+              .setDefault(cat === selectedCat)
+          )
+        );
+      rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+
+      if (selectedCat) {
+        const totalPages = Math.max(1, Math.ceil((cats[selectedCat]?.length ?? 0) / CMDS_PER_PAGE));
+        const btnRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("help_prev")
+            .setLabel("◀  Previous")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page === 0),
+          new ButtonBuilder()
+            .setCustomId("help_page_indicator")
+            .setLabel(`Page ${page + 1} / ${totalPages}`)
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(true),
+          new ButtonBuilder()
+            .setCustomId("help_next")
+            .setLabel("Next  ▶")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page >= totalPages - 1),
+        );
+        rows.push(btnRow);
+      }
+
+      return rows;
+    }
+
+    // ── Overview embed ────────────────────────────────────────────────────────
     const catSummary = sortedCatKeys
       .map((c) => `${catEmojis[c] ?? "📌"} **${c}** — ${cats[c].length} cmd${cats[c].length !== 1 ? "s" : ""}`)
       .join("\n");
@@ -334,37 +378,38 @@ register({
       .setFooter({ text: `${unique.size} total commands  •  Requested by ${message.author.tag}` })
       .setTimestamp();
 
-    const reply = await message.reply({ embeds: [overviewEmbed], components: [row] });
+    const reply = await message.reply({ embeds: [overviewEmbed], components: buildComponents(null, 0) });
 
-    // ── Collect interactions ──
+    // ── State ────────────────────────────────────────────────────────────────
+    let currentCategory: string | null = null;
+    let currentPage = 0;
+
+    // ── Collect interactions ──────────────────────────────────────────────────
     const collector = reply.createMessageComponentCollector({
-      componentType: ComponentType.StringSelect,
       filter: (i) => i.user.id === message.author.id,
       time: 120_000,
     });
 
     collector.on("collect", async (interaction) => {
-      const selected = interaction.values[0];
-      const cmds = (cats[selected] ?? []).sort((a, b) => a.name.localeCompare(b.name));
-
-      // Build fields: group commands 8 per field to avoid hitting 1024-char embed limits
-      const CHUNK = 8;
-      const fields: { name: string; value: string }[] = [];
-      for (let i = 0; i < cmds.length; i += CHUNK) {
-        const chunk = cmds.slice(i, i + CHUNK);
-        fields.push({
-          name: i === 0 ? `Commands (${cmds.length})` : "\u200b",
-          value: chunk.map((c) => `\`${PREFIX}${c.name}\` — ${c.description}`).join("\n"),
-        });
+      if (interaction.isStringSelectMenu() && interaction.customId === "help_category") {
+        currentCategory = interaction.values[0];
+        currentPage = 0;
+      } else if (interaction.isButton()) {
+        if (interaction.customId === "help_prev") {
+          currentPage = Math.max(0, currentPage - 1);
+        } else if (interaction.customId === "help_next") {
+          const total = Math.max(1, Math.ceil((cats[currentCategory!]?.length ?? 0) / CMDS_PER_PAGE));
+          currentPage = Math.min(total - 1, currentPage + 1);
+        } else {
+          return;
+        }
+      } else {
+        return;
       }
 
-      const catEmbed = new EmbedBuilder()
-        .setColor(COLORS.primary)
-        .setTitle(`${catEmojis[selected] ?? "📌"}  ${selected} Commands`)
-        .addFields(fields.length ? fields : [{ name: "Commands", value: "No commands." }])
-        .setFooter({ text: `Use ${PREFIX}help <command> for detailed usage` });
-
-      await interaction.update({ embeds: [catEmbed], components: [row] });
+      const cmds = (cats[currentCategory!] ?? []).slice().sort((a, b) => a.name.localeCompare(b.name));
+      const embed = buildCategoryEmbed(currentCategory!, cmds, currentPage);
+      await interaction.update({ embeds: [embed], components: buildComponents(currentCategory, currentPage) });
     });
 
     collector.on("end", async () => {
