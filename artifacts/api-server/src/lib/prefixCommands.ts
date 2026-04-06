@@ -4286,13 +4286,17 @@ register({
     try {
       const snapshot = await captureServerSnapshot(guild);
       const data = JSON.stringify(snapshot);
-      await db.delete(serverSnapshotTable)
-        .where(and(eq(serverSnapshotTable.guildId, guild.id), eq(serverSnapshotTable.slot, 0)));
-      await db.insert(serverSnapshotTable).values({ guildId: guild.id, slot: 0, data });
+      await db.insert(serverSnapshotTable)
+        .values({ guildId: guild.id, slot: 0, data })
+        .onConflictDoUpdate({
+          target: [serverSnapshotTable.guildId, serverSnapshotTable.slot],
+          set: { data, createdAt: sql`now()` },
+        });
       await saving.edit({ embeds: [successEmbed(`Server saved! Captured **${snapshot.categories.length}** categories and **${snapshot.channels.length}** channels. Use \`-restore server\` to restore.`)] });
     } catch (err) {
+      const cause = (err as any)?.cause?.message ?? '';
       logger.error({ err }, "Failed to save server snapshot");
-      await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}`)] });
+      await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}${cause ? ` — ${cause}` : ''}`)] });
     }
   },
 });
@@ -4409,13 +4413,17 @@ register({
       try {
         const snapshot = await captureServerSnapshot(guild);
         const data = JSON.stringify(snapshot);
-        await db.delete(serverSnapshotTable)
-          .where(and(eq(serverSnapshotTable.guildId, guild.id), eq(serverSnapshotTable.slot, 0)));
-        await db.insert(serverSnapshotTable).values({ guildId: guild.id, slot: 0, data });
+        await db.insert(serverSnapshotTable)
+          .values({ guildId: guild.id, slot: 0, data })
+          .onConflictDoUpdate({
+            target: [serverSnapshotTable.guildId, serverSnapshotTable.slot],
+            set: { data, createdAt: sql`now()` },
+          });
         await saving.edit({ embeds: [successEmbed(`Server saved! Captured **${snapshot.categories.length}** categories and **${snapshot.channels.length}** channels. Use \`-server restore\` or \`-restore server\` to restore.`)] });
       } catch (err) {
+        const cause = (err as any)?.cause?.message ?? '';
         logger.error({ err }, "Failed to save server snapshot");
-        await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}`)] });
+        await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}${cause ? ` — ${cause}` : ''}`)] });
       }
       return;
     }
@@ -4508,13 +4516,17 @@ register({
       try {
         const snapshot = await captureServerSnapshot(guild);
         const data = JSON.stringify(snapshot);
-        await db.delete(serverSnapshotTable)
-          .where(and(eq(serverSnapshotTable.guildId, guild.id), eq(serverSnapshotTable.slot, slotArg)));
-        await db.insert(serverSnapshotTable).values({ guildId: guild.id, slot: slotArg, data });
+        await db.insert(serverSnapshotTable)
+          .values({ guildId: guild.id, slot: slotArg, data })
+          .onConflictDoUpdate({
+            target: [serverSnapshotTable.guildId, serverSnapshotTable.slot],
+            set: { data, createdAt: sql`now()` },
+          });
         await saving.edit({ embeds: [successEmbed(`Server saved to slot **${slotArg}**! Captured **${snapshot.categories.length}** categories and **${snapshot.channels.length}** channels.`)] });
       } catch (err) {
+        const cause = (err as any)?.cause?.message ?? '';
         logger.error({ err }, "Failed to save server snapshot");
-        await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}`)] });
+        await saving.edit({ embeds: [errorEmbed(`Failed to save server. Error: ${(err as Error).message}${cause ? ` — ${cause}` : ''}`)] });
       }
     } else {
       // dump
