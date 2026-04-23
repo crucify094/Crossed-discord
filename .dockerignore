@@ -9,8 +9,7 @@
 replit.nix
 fix-git.sh
 
-# Frontend artifacts (not needed for API server build)
-artifacts/discord-dashboard/
+# Mockup sandbox is dev-only
 artifacts/mockup-sandbox/
 
 # Uploaded assets / screenshots
