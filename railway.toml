@@ -4,4 +4,6 @@ builder = "nixpacks"
 [deploy]
 startCommand = "pnpm --filter @workspace/api-server run start"
 healthcheckPath = "/healthz"
-healthcheckTimeout = 5
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
